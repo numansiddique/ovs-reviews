@@ -1762,6 +1762,7 @@ ofctl_monitor(struct ovs_cmdl_context *ctx)
         case OFP13_VERSION:
         case OFP14_VERSION:
         case OFP15_VERSION:
+        case OFP16_VERSION:
             break;
         default:
             OVS_NOT_REACHED();
