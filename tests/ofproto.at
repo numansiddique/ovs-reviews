@@ -833,6 +833,25 @@ AT_CHECK([ovs-ofctl -F openflow10 dump-flows br0 | ofctl_strip], [0], [OFPST_FLO
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+# It's really dumb that check_overlap and reset_counts are considered
+# part of flow state, but OpenFlow implies that it is, and OFTest and
+# some users insist on it.
+AT_SETUP([ofproto - add-flow and flags])
+OVS_VSWITCHD_START
+AT_CHECK([ovs-ofctl -F openflow10 add-flow br0 check_overlap,in_port=1,actions=drop])
+# Prior to OF1.4, flow dumps didn't include a "flags" field.
+AT_CHECK([ovs-ofctl -F openflow10 dump-flows br0 | ofctl_strip], [0], [dnl
+OFPST_FLOW reply:
+ in_port=1 actions=drop
+])
+# OF1.4 makes the flags visible.
+AT_CHECK([ovs-ofctl -O OpenFlow14 dump-flows br0 | ofctl_strip], [0], [dnl
+OFPST_FLOW reply (OF1.4):
+ check_overlap reset_counts in_port=1 actions=drop
+])
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto - basic flow_mod commands (OpenFlow 1.1)])
 OVS_VSWITCHD_START
 AT_CHECK([ovs-ofctl -O OpenFlow11 dump-flows br0 | ofctl_strip], [0], [OFPST_FLOW reply (OF1.1):
