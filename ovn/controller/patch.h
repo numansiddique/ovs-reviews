@@ -13,24 +13,18 @@
  * limitations under the License.
  */
 
+#ifndef OVN_PATCH_H
+#define OVN_PATCH_H 1
 
-#ifndef OVN_CONTROLLER_H
-#define OVN_CONTROLLER_H 1
+/* Patch Ports
+ * ===========
+ *
+ * This module adds and removes patch ports between the integration bridge and
+ * physical bridges, as directed by other-config:ovn-bridge-mappings. */
 
-#include "ovn/lib/ovn-sb-idl.h"
+struct controller_ctx;
+struct ovsrec_bridge;
 
-struct controller_ctx {
-    struct ovsdb_idl *ovnsb_idl;
-    struct ovsdb_idl_txn *ovnsb_idl_txn;
+void patch_run(struct controller_ctx *, const struct ovsrec_bridge *br_int);
 
-    struct ovsdb_idl *ovs_idl;
-    struct ovsdb_idl_txn *ovs_idl_txn;
-};
-
-const struct ovsrec_bridge *get_bridge(struct ovsdb_idl *,
-                                       const char *br_name);
-
-const struct sbrec_chassis *get_chassis(struct ovsdb_idl *,
-                                        const char *chassis_id);
-
-#endif /* ovn/ovn-controller.h */
+#endif /* ovn/patch.h */
