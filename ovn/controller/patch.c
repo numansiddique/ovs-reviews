@@ -78,7 +78,7 @@ create_patch_port(struct controller_ctx *ctx,
     port = ovsrec_port_insert(ctx->ovs_idl_txn);
     ovsrec_port_set_name(port, src_name);
     ovsrec_port_set_interfaces(port, &iface, 1);
-    const struct smap ids = SMAP_CONST1(&ids, "ovn-patch-port", network);
+    const struct smap ids = SMAP_CONST1(&ids, "ovn-localnet-port", network);
     ovsrec_port_set_external_ids(port, &ids);
 
     struct ovsrec_port **ports;
@@ -193,7 +193,7 @@ patch_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int)
     struct shash existing_ports = SHASH_INITIALIZER(&existing_ports);
     const struct ovsrec_port *port;
     OVSREC_PORT_FOR_EACH (port, ctx->ovs_idl) {
-        if (smap_get(&port->external_ids, "ovn-patch-port")) {
+        if (smap_get(&port->external_ids, "ovn-localnet-port")) {
             shash_add(&existing_ports, port->name, port);
         }
     }
