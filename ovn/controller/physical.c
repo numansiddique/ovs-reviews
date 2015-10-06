@@ -156,6 +156,8 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
 
         const char *localnet = smap_get(&port_rec->external_ids,
                                         "ovn-localnet-port");
+        const char *logpatch = smap_get(&port_rec->external_ids,
+                                        "ovn-logical-patch-port");
 
         for (int j = 0; j < port_rec->n_interfaces; j++) {
             const struct ovsrec_interface *iface_rec = port_rec->interfaces[j];
@@ -169,9 +171,15 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                 continue;
             }
 
-            /* Record as patch to local net, chassis, or local logical port. */
-            if (!strcmp(iface_rec->type, "patch") && localnet) {
+            /* Record as patch to local net, logical patch port, chassis, or
+             * local logical port. */
+            bool is_patch = !strcmp(iface_rec->type, "patch");
+            if (is_patch && localnet) {
                 simap_put(&localnet_to_ofport, localnet, ofport);
+                break;
+            } else if (is_patch && logpatch) {
+                /* Logical patch ports can be handled just like VIFs. */
+                simap_put(&localvif_to_ofport, logpatch, ofport);
                 break;
             } else if (chassis_id) {
                 enum chassis_tunnel_type tunnel_type;
@@ -242,6 +250,8 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
          *       and accessible via a VLAN, 'tag' is the VLAN ID; otherwise
          *       'tag' is 0.
          *
+         *       The same logic handles logical patch ports.
+         *
          *     - If the port is on a remote chassis, the OpenFlow port for a
          *       tunnel to the VIF's remote chassis.  'tun' identifies that
          *       tunnel.
@@ -252,6 +262,7 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
          *
          *       The "localnet" port may be configured with a VLAN ID.  If so,
          *       'tag' will be set to that VLAN ID; otherwise 'tag' is 0.
+         *
          */
 
         int tag = 0;
