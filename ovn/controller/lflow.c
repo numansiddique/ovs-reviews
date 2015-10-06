@@ -264,16 +264,16 @@ lflow_run(struct controller_ctx *ctx, struct hmap *flow_table)
             continue;
         }
 
-        /* Translate logical table ID to physical table ID. */
+        /* Determine translation of logical table IDs to physical table IDs. */
         bool ingress = !strcmp(lflow->pipeline, "ingress");
-        uint8_t phys_table = lflow->table_id + (ingress
-                                                ? OFTABLE_LOG_INGRESS_PIPELINE
-                                                : OFTABLE_LOG_EGRESS_PIPELINE);
-        uint8_t next_phys_table
-            = lflow->table_id + 1 < LOG_PIPELINE_LEN ? phys_table + 1 : 0;
+        uint8_t first_table = (ingress
+                               ? OFTABLE_LOG_INGRESS_PIPELINE
+                               : OFTABLE_LOG_EGRESS_PIPELINE);
+        uint8_t phys_table = first_table + lflow->table_id;
         uint8_t output_phys_table = (ingress
                                      ? OFTABLE_REMOTE_OUTPUT
                                      : OFTABLE_LOG_TO_PHY);
+
         /* Translate OVN actions into OpenFlow actions.
          *
          * XXX Deny changes to 'outport' in egress pipeline. */
@@ -284,7 +284,8 @@ lflow_run(struct controller_ctx *ctx, struct hmap *flow_table)
 
         ofpbuf_use_stub(&ofpacts, ofpacts_stub, sizeof ofpacts_stub);
         error = actions_parse_string(lflow->actions, &symtab, &ldp->ports,
-                                     next_phys_table, output_phys_table,
+                                     first_table, LOG_PIPELINE_LEN,
+                                     lflow->table_id, output_phys_table,
                                      &ofpacts, &prereqs);
         if (error) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
