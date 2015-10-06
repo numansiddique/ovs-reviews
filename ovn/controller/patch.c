@@ -25,102 +25,81 @@
 VLOG_DEFINE_THIS_MODULE(patch);
 
 static char *
-patch_port_name(const struct ovsrec_bridge *b1, const struct ovsrec_bridge *b2)
+patch_port_name(const struct ovsrec_bridge *src,
+                const struct ovsrec_bridge *dst)
 {
-    return xasprintf("patch-%s-to-%s", b1->name, b2->name);
+    return xasprintf("patch-%s-to-%s", src->name, dst->name);
 }
 
-/*
- * Return true if the port is a patch port from b1 to b2
- */
+/* Return true if 'port' is a patch port with the specified 'peer'. */
 static bool
-match_patch_port(const struct ovsrec_port *port,
-                 const struct ovsrec_bridge *b1,
-                 const struct ovsrec_bridge *b2)
+match_patch_port(const struct ovsrec_port *port, const char *peer)
 {
-    struct ovsrec_interface *iface;
-    size_t i;
-    char *peer_port_name;
-    bool res = false;
-
-    peer_port_name = patch_port_name(b2, b1);
-
-    for (i = 0; i < port->n_interfaces; i++) {
-        iface = port->interfaces[i];
+    for (size_t i = 0; i < port->n_interfaces; i++) {
+        struct ovsrec_interface *iface = port->interfaces[i];
         if (strcmp(iface->type, "patch")) {
             continue;
         }
-        const char *peer;
-        peer = smap_get(&iface->options, "peer");
-        if (peer && !strcmp(peer, peer_port_name)) {
-            res = true;
-            break;
+        const char *iface_peer = smap_get(&iface->options, "peer");
+        if (peer && !strcmp(iface_peer, peer)) {
+            return true;
         }
     }
-
-    free(peer_port_name);
-
-    return res;
+    return false;
 }
 
 static void
 create_patch_port(struct controller_ctx *ctx,
                   const char *network,
-                  const struct ovsrec_bridge *b1,
-                  const struct ovsrec_bridge *b2)
+                  const struct ovsrec_bridge *src, const char *src_name,
+                  const struct ovsrec_bridge *dst, const char *dst_name,
+                  struct shash *existing_ports)
 {
-    char *port_name = patch_port_name(b1, b2);
-    char *peer_port_name = patch_port_name(b2, b1);
+    for (size_t i = 0; i < src->n_ports; i++) {
+        if (match_patch_port(src->ports[i], dst_name)) {
+            /* Patch port already exists on 'src'. */
+            shash_find_and_delete(existing_ports, src->ports[i]->name);
+            return;
+        }
+    }
 
     ovsdb_idl_txn_add_comment(ctx->ovs_idl_txn,
             "ovn-controller: creating patch port '%s' from '%s' to '%s'",
-            port_name, b1->name, b2->name);
+            src_name, src->name, dst->name);
 
     struct ovsrec_interface *iface;
     iface = ovsrec_interface_insert(ctx->ovs_idl_txn);
-    ovsrec_interface_set_name(iface, port_name);
+    ovsrec_interface_set_name(iface, src_name);
     ovsrec_interface_set_type(iface, "patch");
-    const struct smap options = SMAP_CONST1(&options, "peer", peer_port_name);
+    const struct smap options = SMAP_CONST1(&options, "peer", dst_name);
     ovsrec_interface_set_options(iface, &options);
 
     struct ovsrec_port *port;
     port = ovsrec_port_insert(ctx->ovs_idl_txn);
-    ovsrec_port_set_name(port, port_name);
+    ovsrec_port_set_name(port, src_name);
     ovsrec_port_set_interfaces(port, &iface, 1);
     const struct smap ids = SMAP_CONST1(&ids, "ovn-patch-port", network);
     ovsrec_port_set_external_ids(port, &ids);
 
     struct ovsrec_port **ports;
-    ports = xmalloc(sizeof *ports * (b1->n_ports + 1));
-    memcpy(ports, b1->ports, sizeof *ports * b1->n_ports);
-    ports[b1->n_ports] = port;
-    ovsrec_bridge_verify_ports(b1);
-    ovsrec_bridge_set_ports(b1, ports, b1->n_ports + 1);
+    ports = xmalloc(sizeof *ports * (src->n_ports + 1));
+    memcpy(ports, src->ports, sizeof *ports * src->n_ports);
+    ports[src->n_ports] = port;
+    ovsrec_bridge_verify_ports(src);
+    ovsrec_bridge_set_ports(src, ports, src->n_ports + 1);
 
     free(ports);
-    free(port_name);
-    free(peer_port_name);
 }
 
 static void
 create_patch_ports(struct controller_ctx *ctx,
                    const char *network,
-                   struct shash *existing_ports,
-                   const struct ovsrec_bridge *b1,
-                   const struct ovsrec_bridge *b2)
+                   const struct ovsrec_bridge *b1, const char *name1,
+                   const struct ovsrec_bridge *b2, const char *name2,
+                   struct shash *existing_ports)
 {
-    size_t i;
-
-    for (i = 0; i < b1->n_ports; i++) {
-        if (match_patch_port(b1->ports[i], b1, b2)) {
-            /* Patch port already exists on b1 */
-            shash_find_and_delete(existing_ports, b1->ports[i]->name);
-            break;
-        }
-    }
-    if (i == b1->n_ports) {
-        create_patch_port(ctx, network, b1, b2);
-    }
+    create_patch_port(ctx, network, b1, name1, b2, name2, existing_ports);
+    create_patch_port(ctx, network, b2, name2, b1, name1, existing_ports);
 }
 
 static void
@@ -191,8 +170,14 @@ parse_bridge_mappings(struct controller_ctx *ctx,
             continue;
         }
 
-        create_patch_ports(ctx, network, existing_ports, br_int, ovs_bridge);
-        create_patch_ports(ctx, network, existing_ports, ovs_bridge, br_int);
+        char *br_int_name = patch_port_name(br_int, ovs_bridge);
+        char *ovs_bridge_name = patch_port_name(ovs_bridge, br_int);
+        create_patch_ports(ctx, network,
+                           br_int, br_int_name,
+                           ovs_bridge, ovs_bridge_name,
+                           existing_ports);
+        free(ovs_bridge_name);
+        free(br_int_name);
     }
     free(start);
 }
