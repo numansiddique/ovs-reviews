@@ -532,9 +532,9 @@ for i in 1 2 3; do
         ovs-vsctl add-port br-int vif$i$j -- set Interface vif$i$j external-ids:iface-id=lp$i$j options:tx_pcap=hv$i/vif$i$j-tx.pcap options:rxq_pcap=hv$i/vif$i$j-rx.pcap ofport-request=$i$j
         ovn-nbctl lport-add lsw0 lp$i$j
 	if test $j = 1; then
-            ovn-nbctl lport-set-macs lp$i$j f0:00:00:00:00:$i$j unknown
+            ovn-nbctl lport-set-addresses lp$i$j f0:00:00:00:00:$i$j unknown
         else
-            ovn-nbctl lport-set-macs lp$i$j f0:00:00:00:00:$i$j
+            ovn-nbctl lport-set-addresses lp$i$j f0:00:00:00:00:$i$j
             ovn-nbctl lport-set-port-security lp$i$j f0:00:00:00:00:$i$j
         fi
     done
