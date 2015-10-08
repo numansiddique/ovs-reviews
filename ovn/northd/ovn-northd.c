@@ -230,6 +230,12 @@ struct ovn_datapath {
 
     struct ovs_list list;       /* In list of similar records. */
 
+    /* Logical router data (digested from nbr). */
+    ovs_be32 gateway;
+
+    /* Logical switch data. */
+    struct ovn_port *router_port;
+
     struct hmap port_tnlids;
     uint32_t port_key_hint;
 
@@ -357,11 +363,26 @@ join_datapaths(struct northd_context *ctx, struct hmap *datapaths,
                 VLOG_WARN_RL(&rl,
                              "duplicate UUID "UUID_FMT" in OVN_Northbound",
                              UUID_ARGS(&nbr->header_.uuid));
+                continue;
             }
         } else {
             od = ovn_datapath_create(datapaths, &nbr->header_.uuid,
                                      NULL, nbr, NULL);
             list_push_back(nb_only, &od->list);
+        }
+
+        od->gateway = 0;
+        if (nbr->default_gw) {
+            ovs_be32 ip, mask;
+            char *error = ip_parse_masked(nbr->default_gw, &ip, &mask);
+            if (error || !ip || mask != OVS_BE32_MAX) {
+                static struct vlog_rate_limit rl
+                    = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad 'gateway' %s", nbr->default_gw);
+                free(error);
+            } else {
+                od->gateway = ip;
+            }
         }
     }
 }
@@ -528,7 +549,11 @@ join_logical_ports(struct northd_context *ctx,
                     op = ovn_port_create(ports, nbs->name, nbs, NULL, NULL);
                     list_push_back(nb_only, &op->list);
                 }
+
                 op->od = od;
+                if (!strcmp(nbs->type, "router")) {
+                    od->router_port = op;
+                }
             }
         } else {
             for (size_t i = 0; i < od->nbr->n_ports; i++) {
@@ -553,20 +578,23 @@ join_logical_ports(struct northd_context *ctx,
                     continue;
                 }
 
-                struct ovn_port *op = ovn_port_find(ports, nbr->name);
+                char name[UUID_LEN + 1];
+                snprintf(name, sizeof name, UUID_FMT,
+                         UUID_ARGS(&nbr->header_.uuid));
+                struct ovn_port *op = ovn_port_find(ports, name);
                 if (op) {
                     if (op->nbs || op->nbr) {
                         static struct vlog_rate_limit rl
                             = VLOG_RATE_LIMIT_INIT(5, 1);
-                        VLOG_WARN_RL(&rl, "duplicate logical port %s",
-                                     nbr->name);
+                        VLOG_WARN_RL(&rl, "duplicate logical router port %s",
+                                     name);
                         continue;
                     }
                     op->nbr = nbr;
                     list_remove(&op->list);
                     list_push_back(both, &op->list);
                 } else {
-                    op = ovn_port_create(ports, nbr->name, NULL, nbr, NULL);
+                    op = ovn_port_create(ports, name, NULL, nbr, NULL);
                     list_push_back(nb_only, &op->list);
                 }
 
@@ -1100,6 +1128,28 @@ lrport_is_enabled(const struct nbrec_logical_router_port *lrport)
 }
 
 static void
+add_route(struct hmap *lflows, struct ovn_datapath *od,
+          ovs_be32 network, ovs_be32 mask, ovs_be32 gateway )
+{
+    char *match = xasprintf("ip4.dst == "IP_FMT"/"IP_FMT,
+                            IP_ARGS(network), IP_ARGS(mask));
+
+    struct ds actions = DS_EMPTY_INITIALIZER;
+    ds_put_cstr(&actions, "ip4.ttl--; reg0 = ");
+    if (gateway) {
+        ds_put_format(&actions, IP_FMT, IP_ARGS(gateway));
+    } else {
+        ds_put_cstr(&actions, "ip4.dst");
+    }
+    ds_put_cstr(&actions, "; next;");
+
+    ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_ROUTING,
+                  count_1bits(ntohl(mask)), match, ds_cstr(&actions));
+    ds_destroy(&actions);
+    free(match);
+}
+
+static void
 build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
                     struct hmap *lflows)
 {
@@ -1212,7 +1262,78 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
                       match, "drop;");
         free(match);
 
-        /* XXX TTL check. */
+        /* TTL discard.
+         *
+         * XXX Need to send ICMP time exceeded if !ip.later_frag. */
+        match = xasprintf("inport == %s && ip4.ttl < 2", op->json_key);
+        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 170,
+                      match, "drop;");
+        free(match);
+    }
+
+    /* Logical router ingress table 2: IP Routing.
+     *
+     * A packet that arrives at this table is an IP packet that should be
+     * routed to the address in ip4.dst. This table sets reg0 to the next-hop
+     * IP address (leaving ip4.dst, the packet’s final destination, unchanged)
+     * and advances to the next table for ARP resolution. */
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (!op->nbr) {
+            continue;
+        }
+
+        add_route(lflows, op->od, op->network, op->mask, 0);
+    }
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        if (od->gateway) {
+            add_route(lflows, od, 0, 0, od->gateway);
+        }
+    }
+    /* XXX destination unreachable */
+
+    /* Local router ingress table 3: ARP Resolution.
+     *
+     * Any packet that reaches this table is an IP packet whose next-hop IP
+     * address is in reg0. (ip4.dst is the final destination.) This table
+     * resolves the IP address in reg0 into an output port in outport and an
+     * Ethernet address in eth.dst. */
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (op->nbr) {
+            /* XXX ARP for neighboring router */
+        } else if (op->od->router_port) {
+            const char *peer_name = smap_get(
+                &op->od->router_port->nbs->options, "router-port");
+            if (!peer_name) {
+                continue;
+            }
+
+            struct ovn_port *peer = ovn_port_find(ports, peer_name);
+            if (!peer || !peer->nbr) {
+                continue;
+            }
+
+            for (size_t i = 0; i < op->nbs->n_addresses; i++) {
+                struct eth_addr ea;
+                ovs_be32 ip;
+
+                if (ovs_scan(op->nbs->addresses[i],
+                             ETH_ADDR_SCAN_FMT" "IP_SCAN_FMT,
+                             ETH_ADDR_SCAN_ARGS(ea), IP_SCAN_ARGS(&ip))) {
+                    char *match = xasprintf("reg0 == "IP_FMT, IP_ARGS(ip));
+                    char *actions = xasprintf(
+                        "eth.dst = "ETH_ADDR_FMT"; outport = %s; output;",
+                        ETH_ADDR_ARGS(ea), peer->json_key);
+                    ovn_lflow_add(lflows, peer->od,
+                                  S_ROUTER_IN_ARP, 200, match, actions);
+                    free(actions);
+                    free(match);
+                }
+            }
+        }
     }
 
     /* Logical router egress table 0: Delivery (priority 100).

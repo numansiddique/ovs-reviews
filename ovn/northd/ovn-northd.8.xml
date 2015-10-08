@@ -406,9 +406,9 @@ output;
 
       <li>
         <p>
-          TTL check.  For each router port <var>P</var>, whose IP address is
-          <var>A</var>, a priority-180 flow with match <code>inport ==
-          <var>P</var> &amp;&amp; ip4.ttl &lt; 2 &amp;&amp;
+          ICMP time exceeded.  For each router port <var>P</var>, whose IP
+          address is <var>A</var>, a priority-180 flow with match <code>inport
+          == <var>P</var> &amp;&amp; ip4.ttl &lt; 2 &amp;&amp;
           !ip.later_frag</code> matches packets whose TTL has expired, with the
           following actions to send an ICMP time exceeded reply:
         </p>
@@ -423,6 +423,13 @@ icmp4 {
     next;
 };
         </pre>
+      </li>
+
+      <li>
+        TTL discard.  A priority-170 flow with match <code>inport ==
+        <var>P</var> &amp;&amp; ip4.ttl &lt; 2</code> and actions
+        <code>drop;</code> drops other packets whose TTL has expired, that
+        should not receive a ICMP error reply.
       </li>
     </ul>
 
@@ -503,8 +510,8 @@ icmp4 {
       Any packet that reaches this table is an IP packet whose next-hop IP
       address is in <code>reg0</code>.  (<code>ip4.dst</code> is the final
       destination.)  This table resolves the IP address in <code>reg0</code>
-      into an Ethernet address in <code>eth.dst</code>, using the following
-      flows:
+      into an output port in <code>outport</code> and an Ethernet address in
+      <code>eth.dst</code>, using the following flows:
     </p>
 
     <ul>
