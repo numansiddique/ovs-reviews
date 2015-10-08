@@ -420,10 +420,17 @@ build_datapaths(struct northd_context *ctx, struct hmap *datapaths)
 struct ovn_port {
     struct hmap_node key_node;  /* Index on 'key'. */
     const char *key;            /* nb->name and sb->logical_port */
+    char *json_key;             /* 'key', quoted for use in JSON. */
 
     const struct nbrec_logical_port *nbs;        /* May be NULL. */
     const struct nbrec_logical_router_port *nbr; /* May be NULL. */
     const struct sbrec_port_binding *sb;         /* May be NULL. */
+
+    /* Logical router port data (digested from nbr). */
+    ovs_be32 ip, mask;          /* 192.168.10.123/24. */
+    ovs_be32 network;           /* 192.168.10.0. */
+    ovs_be32 bcast;             /* 192.168.10.255. */
+    struct eth_addr mac;
 
     struct ovn_datapath *od;
 
@@ -437,6 +444,11 @@ ovn_port_create(struct hmap *ports, const char *key,
                 const struct sbrec_port_binding *sb)
 {
     struct ovn_port *op = xzalloc(sizeof *op);
+
+    struct ds json_key = DS_EMPTY_INITIALIZER;
+    json_string_escape(key, &json_key);
+    op->json_key = ds_steal_cstr(&json_key);
+
     op->key = key;
     op->sb = sb;
     op->nbs = nbs;
@@ -522,6 +534,25 @@ join_logical_ports(struct northd_context *ctx,
             for (size_t i = 0; i < od->nbr->n_ports; i++) {
                 const struct nbrec_logical_router_port *nbr
                     = od->nbr->ports[i];
+
+                struct eth_addr mac;
+                if (!eth_addr_from_string(nbr->mac, &mac)) {
+                    static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                    VLOG_WARN_RL(&rl, "bad 'mac' %s", nbr->mac);
+                    continue;
+                }
+
+                ovs_be32 ip, mask;
+                char *error = ip_parse_masked(nbr->network, &ip, &mask);
+                if (error || mask == OVS_BE32_MAX || !ip_is_cidr(mask)) {
+                    static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                    VLOG_WARN_RL(&rl, "bad 'network' %s", nbr->network);
+                    free(error);
+                    continue;
+                }
+
                 struct ovn_port *op = ovn_port_find(ports, nbr->name);
                 if (op) {
                     if (op->nbs || op->nbr) {
@@ -538,6 +569,13 @@ join_logical_ports(struct northd_context *ctx,
                     op = ovn_port_create(ports, nbr->name, NULL, nbr, NULL);
                     list_push_back(nb_only, &op->list);
                 }
+
+                op->ip = ip;
+                op->mask = mask;
+                op->network = ip & ~mask;
+                op->bcast = ip | ~mask;
+                op->mac = mac;
+
                 op->od = od;
             }
         }
@@ -858,8 +896,8 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
     /* This flow table structure is documented in ovn-northd(8), so please
      * update ovn-northd.8.xml if you change anything. */
 
-    /* Logical switch/router ingress table 0: Admission control framework
-     * (priority 100). */
+    /* Logical switch ingress table 0: Admission control framework (priority
+     * 100). */
     struct ovn_datapath *od;
     HMAP_FOR_EACH (od, key_node, datapaths) {
         if (!od->nbs) {
@@ -892,8 +930,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
 
         struct ds match = DS_EMPTY_INITIALIZER;
-        ds_put_cstr(&match, "inport == ");
-        json_string_escape(op->key, &match);
+        ds_put_format(&match, "inport == %s", op->json_key);
         build_port_security("eth.src",
                             op->nbs->port_security, op->nbs->n_port_security,
                             &match);
@@ -958,9 +995,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                 ds_put_format(&match, "eth.dst == %s", op->nbs->addresses[i]);
 
                 ds_init(&actions);
-                ds_put_cstr(&actions, "outport = ");
-                json_string_escape(op->nbs->name, &actions);
-                ds_put_cstr(&actions, "; output;");
+                ds_put_format(&actions, "outport = %s; output;", op->json_key);
                 ovn_lflow_add(lflows, op->od, S_SWITCH_IN_L2_LKUP, 50,
                               ds_cstr(&match), ds_cstr(&actions));
                 ds_destroy(&actions);
@@ -1042,11 +1077,8 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
             continue;
         }
 
-        struct ds match;
-
-        ds_init(&match);
-        ds_put_cstr(&match, "outport == ");
-        json_string_escape(op->key, &match);
+        struct ds match = DS_EMPTY_INITIALIZER;
+        ds_put_format(&match, "outport == %s", op->json_key);
         if (lport_is_enabled(op->nbs)) {
             build_port_security("eth.dst", op->nbs->port_security,
                                 op->nbs->n_port_security, &match);
@@ -1061,6 +1093,149 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
     }
 }
 
+static bool
+lrport_is_enabled(const struct nbrec_logical_router_port *lrport)
+{
+    return !lrport->enabled || *lrport->enabled;
+}
+
+static void
+build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
+                    struct hmap *lflows)
+{
+    /* This flow table structure is documented in ovn-northd(8), so please
+     * update ovn-northd.8.xml if you change anything. */
+
+    /* XXX ICMP echo reply */
+
+    /* Logical router ingress table 0: Admission control framework. */
+    struct ovn_datapath *od;
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        /* Logical VLANs not supported.
+         * Broadcast/multicast source address is invalid. */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_ADMISSION, 100,
+                      "vlan.present || eth.src[40]", "drop;");
+    }
+
+    /* Logical router ingress table 0: match (priority 50). */
+    struct ovn_port *op;
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (!op->nbr) {
+            continue;
+        }
+
+        if (!lrport_is_enabled(op->nbr)) {
+            /* Drop packets from disabled logical ports (since logical flow
+             * tables are default-drop). */
+            continue;
+        }
+
+        char *match = xasprintf(
+            "(eth.mcast || eth.dst == "ETH_ADDR_FMT") && inport == %s",
+            ETH_ADDR_ARGS(op->mac), op->json_key);
+        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_ADMISSION, 50,
+                      match, "next;");
+    }
+
+    /* Logical router ingress table 1: IP Input. */
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        /* L3 admission control: drop multicast and broadcast source, localhost
+         * source or destination, and zero network source or destination
+         * (priority 220). */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_INPUT, 220,
+                      "ip4.src[28..31] == 0xe || "
+                      "ip4.src == 255.255.255.255 || "
+                      "ip4.src == 127.0.0.0/8 || "
+                      "ip4.dst == 127.0.0.0/8 || "
+                      "ip4.src == 0.0.0.0/8 || "
+                      "ip4.dst == 0.0.0.0/8",
+                      "drop;");
+
+        /* Drop Ethernet local broadcast.  By definition this traffic should
+         * not be forwarded.*/
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_INPUT, 190,
+                      "eth.bcast", "drop;");
+
+        /* Drop IP multicast. */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_INPUT, 190,
+                      "ip4.mcast", "drop;");
+    }
+
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (!op->nbr) {
+            continue;
+        }
+
+        /* L3 admission control: drop packets that originate from an IP address
+         * owned by the router or a broadcast address known to the router
+         * (priority 220). */
+        char *match = xasprintf("ip4.src == {"IP_FMT", "IP_FMT"}",
+                                IP_ARGS(op->ip), IP_ARGS(op->bcast));
+        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 220,
+                      match, "drop;");
+        free(match);
+
+        /* ARP reply.  These flows reply to ARP requests for the router's own
+         * IP address. */
+        match = xasprintf(
+            "inport == %s && arp.tpa == "ETH_ADDR_FMT" && arp.op == 1",
+            op->json_key, ETH_ADDR_ARGS(op->mac));
+        char *actions = xasprintf(
+            "eth.dst = eth.src; "
+            "eth.src = "ETH_ADDR_FMT"; "
+            "eth.op = 2; /* ARP reply */ "
+            "eth.tha = arp.sha; "
+            "arp.sha = "ETH_ADDR_FMT"; "
+            "arp.tpa = arp.spa; "
+            "arp.spa = "IP_FMT"; "
+            "outport = %s; "
+            "inport = 0; /* Allow sending out inport. */ "
+            "output;",
+            ETH_ADDR_ARGS(op->mac),
+            ETH_ADDR_ARGS(op->mac),
+            IP_ARGS(op->ip),
+            op->json_key);
+        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 210,
+                      match, actions);
+
+        /* Drop IP traffic to this router. */
+        match = xasprintf("ip4.dst == "IP_FMT, IP_ARGS(op->ip));
+        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 200,
+                      match, "drop;");
+        free(match);
+
+        /* XXX TTL check. */
+    }
+
+    /* Logical router egress table 0: Delivery (priority 100).
+     *
+     * Priority 100 rules deliver packets to enabled logical ports. */
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (!op->nbr) {
+            continue;
+        }
+
+        if (!lrport_is_enabled(op->nbr)) {
+            /* Drop packets to disabled logical ports (since logical flow
+             * tables are default-drop). */
+            continue;
+        }
+
+        char *match = xasprintf("outport == %s", op->json_key);
+        ovn_lflow_add(lflows, op->od, S_ROUTER_OUT_DELIVERY, 100,
+                      match, "output;");
+        free(match);
+    }
+}
+
 /* Updates the Logical_Flow and Multicast_Group tables in the OVN_SB database,
  * constructing their contents based on the OVN_NB database. */
 static void
@@ -1071,6 +1246,7 @@ build_lflows(struct northd_context *ctx, struct hmap *datapaths,
     struct hmap mcgroups = HMAP_INITIALIZER(&mcgroups);
 
     build_lswitch_flows(datapaths, ports, &lflows, &mcgroups);
+    build_lrouter_flows(datapaths, ports, &lflows);
 
     /* Push changes to the Logical_Flow table to database. */
     const struct sbrec_logical_flow *sbflow, *next_sbflow;

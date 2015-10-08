@@ -225,14 +225,10 @@
       </li>
 
       <li>
-        One priority-50 flow that matches on <code>eth.mcast</code>
-        with action <code>next;</code>.
-      </li>
-
-      <li>
-        For each router port <var>P</var> with Ethernet address <var>E</var>, a
-        priority-50 flow that matches <code>inport == <var>P</var> &amp;&amp;
-        eth.dst == <var>E</var></code>, with action <code>next;</code>.
+        For each enabled router port <var>P</var> with Ethernet address
+        <var>E</var>, a priority-50 flow that matches <code>inport ==
+        <var>P</var> &amp;&amp; (eth.mcast || eth.dst ==
+        <var>E</var></code>), with action <code>next;</code>.
       </li>
     </ul>
 
@@ -283,14 +279,14 @@
       <li>
         <p>
           ICMP echo reply.  These flows reply to ICMP echo requests received
-          for the router's IP address.  Let <var>A</var> be an IP address owned
-          by the router or the broadcast address for one of these IP address's
-          networks.  Then, for each <var>A</var>, a priority-210 flow matches
-          on <code>ip4.dst == <var>A</var></code> and <code>icmp4.type == 8
-          &amp;&amp; icmp4.code == 0</code> (ICMP echo request).  These flows
-          use the following actions where, if <var>A</var> is unicast, then
-          <var>S</var> is <var>A</var>, and if <var>A</var> is broadcast,
-          <var>S</var> is the router's IP address in <var>A</var>'s network:
+          for the router's IP address.  Let <var>A</var> be an IP address or
+          broadcast address owned by a router port.  Then, for each
+          <var>A</var>, a priority-210 flow matches on <code>ip4.dst ==
+          <var>A</var></code> and <code>icmp4.type == 8 &amp;&amp; icmp4.code
+          == 0</code> (ICMP echo request).  These flows use the following
+          actions where, if <var>A</var> is unicast, then <var>S</var> is
+          <var>A</var>, and if <var>A</var> is broadcast, <var>S</var> is the
+          router's IP address in <var>A</var>'s network:
         </p>
 
         <pre>
@@ -321,13 +317,13 @@ next;
         <pre>
 eth.dst = eth.src;
 eth.src = <var>E</var>;
-arp.op = 2; // ARP reply
+arp.op = 2; /* ARP reply. */
 arp.tha = arp.sha;
 arp.sha = <var>E</var>;
 arp.tpa = arp.spa;
 arp.spa = <var>A</var>;
 outport = <var>P</var>;
-inport = 0; // allow sending out inport
+inport = 0; /* Allow sending out inport. */
 output;
         </pre>
       </li>
@@ -398,10 +394,9 @@ output;
 
     <ul>
       <li>
-        Ethernet local broadcast.  A priority-190 flow with match <code>eth.dst
-        == ff:ff:ff:ff:ff:ff</code> drops traffic destined to the local
-        Ethernet broadcast address.  By definition this traffic should not be
-        forwarded.
+        Drop Ethernet local broadcast.  A priority-190 flow with match
+        <code>eth.bcast</code> drops traffic destined to the local Ethernet
+        broadcast address.  By definition this traffic should not be forwarded.
       </li>
 
       <li>
@@ -420,8 +415,8 @@ output;
 
         <pre>
 icmp4 {
-    icmp4.type = 11; // Time exceeded
-    icmp4.code = 0;  // TTL exceeded in transit
+    icmp4.type = 11; /* Time exceeded. */
+    icmp4.code = 0;  /* TTL exceeded in transit. */
     ip4.dst = ip4.src;
     ip4.src = <var>A</var>;
     ip4.ttl = 255;
@@ -481,8 +476,8 @@ next;
 
         <pre>
 icmp4 {
-    icmp4.type = 3; // Destination unreachable
-    icmp4.code = 0; // Network unreachable
+    icmp4.type = 3; /* Destination unreachable. */
+    icmp4.code = 0; /* Network unreachable. */
     ip4.dst = ip4.src;
     ip4.src = <var>A</var>;
     ip4.ttl = 255;
@@ -557,7 +552,7 @@ arp {
     arp.tha = 00:00:00:00:00:00;
     arp.spa = <var>A</var>;
     arp.tpa = ip4.dst;
-    arp.op = 1;  // ARP request
+    arp.op = 1;  /* ARP request. */
     outport = <var>P</var>;
     output;
 };
@@ -573,9 +568,9 @@ arp {
     <h3>Egress Table 0: Delivery</h3>
 
     <p>
-      Packets that reach this table are ready for delivery.  It contains a
-      single priority-0 logical flow that matches all packets and actions
-      <code>output;</code>.
+      Packets that reach this table are ready for delivery.  It contains
+      priority-100 logical flows that match packets on each enabled logical
+      router port, with action <code>output;</code>.
     </p>
 
 </manpage>
