@@ -448,11 +448,12 @@ struct ovn_port {
     const struct nbrec_logical_router_port *nbr; /* May be NULL. */
     const struct sbrec_port_binding *sb;         /* May be NULL. */
 
-    /* Logical router port data (digested from nbr). */
+    /* Logical router port data. */
     ovs_be32 ip, mask;          /* 192.168.10.123/24. */
     ovs_be32 network;           /* 192.168.10.0. */
     ovs_be32 bcast;             /* 192.168.10.255. */
     struct eth_addr mac;
+    struct ovn_port *peer;
 
     struct ovn_datapath *od;
 
@@ -554,9 +555,6 @@ join_logical_ports(struct northd_context *ctx,
                 }
 
                 op->od = od;
-                if (!strcmp(nbs->type, "router")) {
-                    od->router_port = op;
-                }
             }
         } else {
             for (size_t i = 0; i < od->nbr->n_ports; i++) {
@@ -611,6 +609,32 @@ join_logical_ports(struct northd_context *ctx,
             }
         }
     }
+
+    /* Connect logical router ports, and logical switch ports of type "router",
+     * to their peers. */
+    struct ovn_port *op;
+    HMAP_FOR_EACH (op, key_node, ports) {
+        if (op->nbs && !strcmp(op->nbs->type, "router")) {
+            const char *peer_name = smap_get(&op->nbs->options, "router-port");
+            if (!peer_name) {
+                continue;
+            }
+
+            struct ovn_port *peer = ovn_port_find(ports, peer_name);
+            if (!peer || !peer->nbr) {
+                continue;
+            }
+
+            peer->peer = op;
+            op->peer = peer;
+            op->od->router_port = op;
+        } else if (op->nbr && op->nbr->peer) {
+            char peer_name[UUID_LEN + 1];
+            snprintf(peer_name, sizeof peer_name, UUID_FMT,
+                     UUID_ARGS(&op->nbr->peer->header_.uuid));
+            op->peer = ovn_port_find(ports, peer_name);
+        }
+    }
 }
 
 static void
@@ -620,13 +644,7 @@ ovn_port_update_sbrec(const struct ovn_port *op)
     if (op->nbr) {
         sbrec_port_binding_set_type(op->sb, "patch");
 
-        char peer[UUID_LEN + 1];
-        if (op->nbr->peer) {
-            snprintf(peer, sizeof peer, UUID_FMT,
-                     UUID_ARGS(&op->nbr->peer->header_.uuid));
-        } else {
-            ovs_strlcpy(peer, "<error>", sizeof peer);
-        }
+        const char *peer = op->peer ? op->peer->key : "<error>";
         const struct smap ids = SMAP_CONST1(&ids, "peer", peer);
         sbrec_port_binding_set_options(op->sb, &ids);
 
@@ -1204,7 +1222,7 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
          * source or destination, and zero network source or destination
          * (priority 220). */
         ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_INPUT, 220,
-                      "ip4.src[28..31] == 0xe || "
+                      "ip4.mcast || "
                       "ip4.src == 255.255.255.255 || "
                       "ip4.src == 127.0.0.0/8 || "
                       "ip4.dst == 127.0.0.0/8 || "
@@ -1401,8 +1419,8 @@ build_lflows(struct northd_context *ctx, struct hmap *datapaths,
 
         sbflow = sbrec_logical_flow_insert(ctx->ovnsb_txn);
         sbrec_logical_flow_set_logical_datapath(sbflow, lflow->od->sb);
-        sbrec_logical_flow_set_pipeline(sbflow,
-                                        pipeline ? "ingress" : "egress");
+        sbrec_logical_flow_set_pipeline(
+            sbflow, pipeline == P_IN ? "ingress" : "egress");
         sbrec_logical_flow_set_table_id(sbflow, table);
         sbrec_logical_flow_set_priority(sbflow, lflow->priority);
         sbrec_logical_flow_set_match(sbflow, lflow->match);
