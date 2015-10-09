@@ -1345,9 +1345,13 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
                              ETH_ADDR_SCAN_FMT" "IP_SCAN_FMT,
                              ETH_ADDR_SCAN_ARGS(ea), IP_SCAN_ARGS(&ip))) {
                     char *match = xasprintf("reg0 == "IP_FMT, IP_ARGS(ip));
-                    char *actions = xasprintf(
-                        "eth.dst = "ETH_ADDR_FMT"; outport = %s; output;",
-                        ETH_ADDR_ARGS(ea), peer->json_key);
+                    char *actions = xasprintf("eth.src = "ETH_ADDR_FMT"; "
+                                              "eth.dst = "ETH_ADDR_FMT"; "
+                                              "outport = %s; "
+                                              "output;",
+                                              ETH_ADDR_ARGS(peer->mac),
+                                              ETH_ADDR_ARGS(ea),
+                                              peer->json_key);
                     ovn_lflow_add(lflows, peer->od,
                                   S_ROUTER_IN_ARP, 200, match, actions);
                     free(actions);

@@ -517,13 +517,15 @@ icmp4 {
       <li>
         <p>
           Known MAC bindings.  For each IP address <var>A</var> whose host is
-          known to have Ethernet address <var>E</var> and reside on router port
-          <var>P</var>, a priority-200 flow with match <code>reg0 ==
-          <var>A</var></code> has the following actions:
+          known to have Ethernet address <var>HE</var> and reside on router
+          port <var>P</var> with Ethernet address <var>PE</var>, a priority-200
+          flow with match <code>reg0 == <var>A</var></code> has the following
+          actions:
         </p>
 
         <pre>
-eth.dst = <var>E</var>;
+eth.src = <var>PE</var>;
+eth.dst = <var>HE</var>;
 outport = <var>P</var>;
 output;
         </pre>
