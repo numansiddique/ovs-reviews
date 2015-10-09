@@ -601,7 +601,7 @@ join_logical_ports(struct northd_context *ctx,
 
                 op->ip = ip;
                 op->mask = mask;
-                op->network = ip & ~mask;
+                op->network = ip & mask;
                 op->bcast = ip | ~mask;
                 op->mac = mac;
 
@@ -1041,7 +1041,8 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                 struct ds match, actions;
 
                 ds_init(&match);
-                ds_put_format(&match, "eth.dst == %s", op->nbs->addresses[i]);
+                ds_put_format(&match, "eth.dst == "ETH_ADDR_FMT,
+                              ETH_ADDR_ARGS(mac));
 
                 ds_init(&actions);
                 ds_put_format(&actions, "outport = %s; output;", op->json_key);
@@ -1150,7 +1151,7 @@ lrport_is_enabled(const struct nbrec_logical_router_port *lrport)
 
 static void
 add_route(struct hmap *lflows, struct ovn_datapath *od,
-          ovs_be32 network, ovs_be32 mask, ovs_be32 gateway )
+          ovs_be32 network, ovs_be32 mask, ovs_be32 gateway)
 {
     char *match = xasprintf("ip4.dst == "IP_FMT"/"IP_FMT,
                             IP_ARGS(network), IP_ARGS(mask));
@@ -1238,6 +1239,13 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
         /* Drop IP multicast. */
         ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_INPUT, 190,
                       "ip4.mcast", "drop;");
+
+        /* TTL discard.
+         *
+         * XXX Need to send ICMP time exceeded if !ip.later_frag. */
+        char *match = xasprintf("ip4 && ip.ttl == {0, 1}");
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_IP_INPUT, 170, match, "drop;");
+        free(match);
     }
 
     HMAP_FOR_EACH (op, key_node, ports) {
@@ -1257,18 +1265,18 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
         /* ARP reply.  These flows reply to ARP requests for the router's own
          * IP address. */
         match = xasprintf(
-            "inport == %s && arp.tpa == "ETH_ADDR_FMT" && arp.op == 1",
+            "inport == %s && arp.tha == "ETH_ADDR_FMT" && arp.op == 1",
             op->json_key, ETH_ADDR_ARGS(op->mac));
         char *actions = xasprintf(
             "eth.dst = eth.src; "
             "eth.src = "ETH_ADDR_FMT"; "
-            "eth.op = 2; /* ARP reply */ "
-            "eth.tha = arp.sha; "
+            "arp.op = 2; /* ARP reply */ "
+            "arp.tha = arp.sha; "
             "arp.sha = "ETH_ADDR_FMT"; "
             "arp.tpa = arp.spa; "
             "arp.spa = "IP_FMT"; "
             "outport = %s; "
-            "inport = 0; /* Allow sending out inport. */ "
+            "inport = \"\"; /* Allow sending out inport. */ "
             "output;",
             ETH_ADDR_ARGS(op->mac),
             ETH_ADDR_ARGS(op->mac),
@@ -1280,14 +1288,6 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
         /* Drop IP traffic to this router. */
         match = xasprintf("ip4.dst == "IP_FMT, IP_ARGS(op->ip));
         ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 200,
-                      match, "drop;");
-        free(match);
-
-        /* TTL discard.
-         *
-         * XXX Need to send ICMP time exceeded if !ip.later_frag. */
-        match = xasprintf("inport == %s && ip4.ttl < 2", op->json_key);
-        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 170,
                       match, "drop;");
         free(match);
     }
