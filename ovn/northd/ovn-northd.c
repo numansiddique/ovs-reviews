@@ -310,7 +310,8 @@ join_datapaths(struct northd_context *ctx, struct hmap *datapaths,
     const struct sbrec_datapath_binding *sb, *sb_next;
     SBREC_DATAPATH_BINDING_FOR_EACH_SAFE (sb, sb_next, ctx->ovnsb_idl) {
         struct uuid key;
-        if (!smap_get_uuid(&sb->external_ids, "logical-switch", &key)) {
+        if (!smap_get_uuid(&sb->external_ids, "logical-switch", &key) &&
+            !smap_get_uuid(&sb->external_ids, "logical-router", &key)) {
             ovsdb_idl_txn_add_comment(ctx->ovnsb_txn,
                                       "deleting Datapath_Binding "UUID_FMT" that "
                                       "lacks external-ids:logical-switch",
@@ -440,7 +441,7 @@ build_datapaths(struct northd_context *ctx, struct hmap *datapaths)
 
 struct ovn_port {
     struct hmap_node key_node;  /* Index on 'key'. */
-    const char *key;            /* nb->name and sb->logical_port */
+    char *key;                  /* nb->name and sb->logical_port */
     char *json_key;             /* 'key', quoted for use in JSON. */
 
     const struct nbrec_logical_port *nbs;        /* May be NULL. */
@@ -470,7 +471,7 @@ ovn_port_create(struct hmap *ports, const char *key,
     json_string_escape(key, &json_key);
     op->json_key = ds_steal_cstr(&json_key);
 
-    op->key = key;
+    op->key = xstrdup(key);
     op->sb = sb;
     op->nbs = nbs;
     op->nbr = nbr;
@@ -486,6 +487,8 @@ ovn_port_destroy(struct hmap *ports, struct ovn_port *port)
          * private list and once we've exited that function it is not safe to
          * use it. */
         hmap_remove(ports, &port->key_node);
+        free(port->json_key);
+        free(port->key);
         free(port);
     }
 }
