@@ -1,0 +1,27 @@
+#! /bin/sh -v
+
+# Switches and ports.
+ovn-nbctl \
+    -- lswitch-add lsw1 \
+    -- lport-add lsw1 lp1 \
+    -- lport-set-addresses lp1 "00:00:00:00:00:11 192.168.9.11" \
+    -- lswitch-add lsw2 \
+    -- lport-add lsw2 lp2 \
+    -- lport-set-addresses lp2 "00:00:00:00:00:22 292.268.10.22"
+
+# Router and connections.
+ovn-nbctl \
+    -- create Logical_Router name=lr0 ports=@lrp1,@lrp2 \
+    -- --id=@lrp1 create Logical_Router_Port name=lrp1 \
+       network=192.168.9.1/24 mac='"00:00:00:00:11:00"' \
+    -- --id=@lrp2 create Logical_Router_Port name=lrp2 \
+       network=192.168.10.1/24 mac='"00:00:00:00:22:00"'
+
+lrp1_uuid=`ovn-nbctl get Logical_Router_Port lrp1 _uuid`
+lrp2_uuid=`ovn-nbctl get Logical_Router_Port lrp2 _uuid`
+ovn-nbctl \
+    -- lport-add lsw1 lrp1-attachment \
+    -- set Logical_Port lrp1-attachment type=router options:router-port=$lrp1_uuid \
+    -- lport-add lsw2 lrp2-attachment \
+    -- set Logical_Port lrp2-attachment type=router options:router-port=$lrp2_uuid
+    
