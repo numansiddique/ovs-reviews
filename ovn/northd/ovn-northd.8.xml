@@ -202,7 +202,7 @@
       <code>eth.src</code>.  Second, packets directed to broadcast or multicast
       <code>eth.dst</code> are always accepted instead of being subject to the
       port security rules; this is implemented through a priority-100 flow that
-      matches on <code>eth.dst[40]</code> with action <code>output;</code>.
+      matches on <code>eth.mcast</code> with action <code>output;</code>.
       Finally, to ensure that even broadcast and multicast packets are not
       delivered to disabled logical ports, a priority-150 flow for each
       disabled logical <code>outport</code> overrides the priority-100 flow
@@ -227,7 +227,7 @@
       <li>
         For each enabled router port <var>P</var> with Ethernet address
         <var>E</var>, a priority-50 flow that matches <code>inport ==
-        <var>P</var> &amp;&amp; (eth.dst[40] || eth.dst ==
+        <var>P</var> &amp;&amp; (eth.mcast || eth.dst ==
         <var>E</var></code>), with action <code>next;</code>.
       </li>
     </ul>
