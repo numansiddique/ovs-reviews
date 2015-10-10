@@ -47,12 +47,6 @@ various ways to ensure it could be implemented, e.g. the same as for
 OpenFlow by allowing the logical inport to be zeroed, or by
 introducing a new action that ignores the inport.
 
-** ovn-northd
-
-*** What flows should it generate?
-
-See description in ovn-northd(8).
-
 ** New OVN logical actions
 
 *** arp
