@@ -668,8 +668,21 @@ ovn_port_update_sbrec(const struct ovn_port *op)
         }
         sbrec_port_binding_set_parent_port(op->sb, op->nbs->parent_name);
         sbrec_port_binding_set_tag(op->sb, op->nbs->tag, op->nbs->n_tag);
-        sbrec_port_binding_set_mac(op->sb, (const char **) op->nbs->addresses,
+        char *macs[op->nbs->n_addresses];
+        for (size_t i = 0; i < op->nbs->n_addresses; i++) {
+            struct eth_addr mac;
+            macs[i] = NULL;
+            if (eth_addr_from_string(op->nbs->addresses[i], &mac))
+                macs[i] = xasprintf(ETH_ADDR_FMT, ETH_ADDR_ARGS(mac));
+        }
+
+        sbrec_port_binding_set_mac(op->sb, (const char **) macs,
                                    op->nbs->n_addresses);
+
+        for (size_t i = 0; i < op->nbs->n_addresses; i++) {
+            if(macs[i])
+                free(macs[i]);
+        }
     }
 }
 
