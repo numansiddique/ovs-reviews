@@ -1063,8 +1063,24 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                               ds_cstr(&match), ds_cstr(&actions));
                 ds_destroy(&actions);
                 ds_destroy(&match);
+
+                ovs_be32 ip;
+                if (ovs_scan(op->nbs->addresses[i],
+                             ETH_ADDR_SCAN_FMT" "IP_SCAN_FMT,
+                             ETH_ADDR_SCAN_ARGS(mac), IP_SCAN_ARGS(&ip))) {
+                    ds_init(&match);
+		    ds_put_format(&match, "inport == %s", op->json_key);
+		    ds_put_format(&match, " && eth.src == "ETH_ADDR_FMT, ETH_ADDR_ARGS(mac));
+		    ds_put_format(&match, " && ip4 && udp && udp.src == 68 && udp.dst == 67");
+		    ds_init(&actions);
+		    ds_put_format(&actions, "ip4.src = "IP_FMT "; controller;", IP_ARGS(ip));
+		    ovn_lflow_add(lflows, op->od, S_SWITCH_IN_L2_LKUP, 150,
+		                  ds_cstr(&match), ds_cstr(&actions));
+		    ds_destroy(&actions);
+		    ds_destroy(&match);
+		}
             } else if (!strcmp(op->nbs->addresses[i], "unknown")) {
-                if (lport_is_enabled(op->nbs)) {
+		if (lport_is_enabled(op->nbs)) {
                     ovn_multicast_add(mcgroups, &mc_unknown, op);
                     op->od->has_unknown = true;
                 }
@@ -1075,6 +1091,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                              "%s: invalid syntax '%s' in addresses column",
                              op->nbs->name, op->nbs->addresses[i]);
             }
+
         }
     }
 

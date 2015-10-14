@@ -133,6 +133,15 @@ emit_resubmit(struct action_context *ctx, uint8_t table_id)
     resubmit->table_id = table_id;
 }
 
+static void
+emit_controller(struct action_context *ctx)
+{
+    struct ofpact_controller *controller = ofpact_put_CONTROLLER(ctx->ofpacts);
+    controller->max_len = UINT16_MAX;
+    controller->controller_id = 0;
+    controller->reason = OFPR_ACTION;
+}
+
 static bool
 action_get_int(struct action_context *ctx, int *value)
 {
@@ -214,6 +223,8 @@ parse_actions(struct action_context *ctx)
             } else {
                 action_syntax_error(ctx, "expecting `--'");
             }
+        } else if (lexer_match_id(ctx->lexer, "controller")) {
+            emit_controller(ctx);
         } else {
             action_syntax_error(ctx, "expecting action");
         }
