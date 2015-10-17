@@ -16,6 +16,7 @@
 #include <config.h>
 #include "dp-packet.h"
 #include "dhcp.h"
+#include "lflow.h"
 #include "ofpbuf.h"
 #include "ofp-actions.h"
 #include "ofp-version-opt.h"
