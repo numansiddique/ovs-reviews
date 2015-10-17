@@ -12,6 +12,8 @@ ovn_controller_ovn_controller_SOURCES = \
 	ovn/controller/ofctrl.h \
 	ovn/controller/patch.c \
 	ovn/controller/patch.h \
+	ovn/controller/ofcontroller.c \
+	ovn/controller/ofcontroller.h \
 	ovn/controller/ovn-controller.c \
 	ovn/controller/ovn-controller.h \
 	ovn/controller/physical.c \
