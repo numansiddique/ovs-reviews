@@ -20,13 +20,14 @@
 #include "ofp-actions.h"
 #include "ofpbuf.h"
 #include "ovn-controller.h"
+#include "ofcontroller.h"
 
 /* Adds the flows in the OFTABLE_CONTROLLER table to
  * forward the packets to the controller to handle
  *
  */
 void
-ofcontroller_add_flows(struct sbrec_port_binding *binding,
+ofcontroller_add_flows(const struct sbrec_port_binding *binding,
 		       struct hmap *flow_table)
 {
     struct match match;

@@ -21,6 +21,7 @@
 #include "ofp-actions.h"
 #include "ofpbuf.h"
 #include "ovn-controller.h"
+#include "ofcontroller.h"
 #include "ovn/lib/ovn-sb-idl.h"
 #include "openvswitch/vlog.h"
 #include "shash.h"
@@ -490,7 +491,7 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
 
         if (binding->chassis && binding->chassis->name &&
             (!strcmp(binding->chassis->name, this_chassis_id))) {
-            ofcontroller_add_flows(binding);
+            ofcontroller_add_flows(binding, flow_table);
         }
 
     }
