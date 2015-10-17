@@ -21,6 +21,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include "command-line.h"
@@ -40,6 +41,7 @@
 #include "util.h"
 
 #include "ofctrl.h"
+#include "ofcontroller.h"
 #include "binding.h"
 #include "chassis.h"
 #include "encaps.h"
@@ -54,6 +56,7 @@ static unixctl_cb_func ovn_controller_exit;
 #define DEFAULT_BRIDGE_NAME "br-int"
 
 static void parse_options(int argc, char *argv[]);
+static char const* get_switch_controller_path(void);
 OVS_NO_RETURN static void usage(void);
 
 static char *ovs_remote;
@@ -82,6 +85,17 @@ get_bridge(struct ovsdb_idl *ovs_idl, const char *br_name)
         }
     }
     return NULL;
+}
+
+static char const* get_switch_controller_path(void) {
+    static char *path = NULL;
+
+    if (!path)
+        path = xasprintf("%s/%s.%ld.sock",
+                         ovs_rundir(), "ovn-controller",
+                         (long int)getpid());
+
+    return path;
 }
 
 static const struct ovsrec_bridge *
@@ -121,6 +135,13 @@ create_br_int(struct controller_ctx *ctx,
     bridges[cfg->n_bridges] = bridge;
     ovsrec_open_vswitch_verify_bridges(cfg);
     ovsrec_open_vswitch_set_bridges(cfg, bridges, cfg->n_bridges + 1);
+
+    struct ovsrec_controller *controller;
+    char *proto = xasprintf("unix:%s", get_switch_controller_path());
+    controller = ovsrec_controller_insert(ctx->ovs_idl_txn);
+    ovsrec_controller_set_target(controller, proto);
+    ovsrec_bridge_set_controller(bridge, &controller, 1);
+    free(proto);
 
     return bridge;
 }
@@ -207,6 +228,7 @@ main(int argc, char *argv[])
     sbrec_init();
 
     ofctrl_init();
+    ofcontroller_init(get_switch_controller_path());
     lflow_init();
 
     /* Connect to OVS OVSDB instance.  We do not monitor all tables by
@@ -258,6 +280,7 @@ main(int argc, char *argv[])
         /* Map bridges to local nets from ovn-bridge-mappings */
         if (br_int) {
             patch_run(&ctx, br_int);
+            ofcontroller_run(br_int);
         }
 
         if (chassis_id) {
@@ -291,6 +314,7 @@ main(int argc, char *argv[])
 
         if (br_int) {
             ofctrl_wait();
+            ofcontroller_wait();
         }
         poll_block();
         if (should_service_stop()) {
