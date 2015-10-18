@@ -16,6 +16,7 @@
 #include <config.h>
 #include "dp-packet.h"
 #include "dhcp.h"
+#include "lflow.h"
 #include "ofpbuf.h"
 #include "ofp-actions.h"
 #include "ofp-version-opt.h"
@@ -39,7 +40,9 @@ struct pvconn * pvconn;
 struct rconn *rconn = NULL;
 
 
-void ofcontroller_init(char const *sock_path) {
+void
+ofcontroller_init(char const *sock_path)
+{
     char *proto = xasprintf("punix:%s", sock_path);
     pvconn_open(proto, 0, 0, &pvconn);
     free(proto);
@@ -53,7 +56,9 @@ static enum ofputil_protocol get_ofp_proto(void) {
 }
 
 
-static void get_dhcp_options(char *ret, uint32_t *ret_len) {
+static void
+get_dhcp_options(char *ret, uint32_t *ret_len)
+{
     char *start = ret;
 
     *(uint32_t *)ret = htonl(0x63825363); /*magic cookie*/
@@ -105,9 +110,11 @@ static void get_dhcp_options(char *ret, uint32_t *ret_len) {
 }
 
 
-static void compose_dhcp_response(struct flow *in_flow,
-                                  struct dhcp_header const *in_dhcp,
-                                  struct dp_packet *out_packet) {
+static void
+compose_dhcp_response(struct flow *in_flow,
+                      struct dhcp_header const *in_dhcp,
+                      struct dp_packet *out_packet)
+{
     struct flow out_flow;
     struct eth_addr eth_addr = {.ea = {0x9a, 0x56, 0x02, 0x53, 0xc2, 0x40}};
     char options[128];
@@ -133,61 +140,64 @@ static void compose_dhcp_response(struct flow *in_flow,
     ip->ip_tos = in_flow->nw_tos;
     ip->ip_ttl = in_flow->nw_ttl;
     ip->ip_proto = IPPROTO_UDP;
-    put_16aligned_be32(&ip->ip_src, 0x01010101);
-    put_16aligned_be32(&ip->ip_dst, 0x6401A8C0);
-    ip->ip_tot_len = IP_HEADER_LEN + UDP_HEADER_LEN;
-    ip->ip_csum = csum(ip, sizeof *ip);
+    put_16aligned_be32(&ip->ip_src, (ovs_be32) 0x0);
+    put_16aligned_be32(&ip->ip_dst, in_flow->nw_dst);
 
     struct udp_header *udp;
     udp = dp_packet_put_zeros(out_packet, sizeof(*udp));
-    udp->udp_src = htons(67);
-    udp->udp_dst = htons(68);
-
+    udp->udp_src = htons(ofp_to_u16(67));
+    udp->udp_dst = htons(ofp_to_u16(68));
     struct dhcp_header * dhcp;
     dhcp = dp_packet_put_zeros(out_packet, sizeof(*dhcp));
     memcpy(dhcp, in_dhcp, sizeof(struct dhcp_header));
     dhcp->op = 0x02;
-    dhcp->yiaddr = 0x6401A8C0; //HACK
+    dhcp->yiaddr = in_flow->nw_src; //HACK
 
     void * opts = dp_packet_put_zeros(out_packet, options_len);
     memcpy(opts, options, options_len);
 
-    udp->udp_len = htons(sizeof(*dhcp) + options_len + UDP_HEADER_LEN);
+    int udp_len = sizeof(*dhcp) + options_len + UDP_HEADER_LEN;
+    udp->udp_len = htons(ofp_to_u16(udp_len));
+    ip->ip_tot_len = htons(ofp_to_u16(IP_HEADER_LEN + udp_len));
+    ip->ip_csum = csum(ip, sizeof *ip);
     udp->udp_csum = csum(udp, sizeof(*dhcp) + options_len + UDP_HEADER_LEN);
+    udp->udp_csum = 0;
 }
 
 
-static void process_packet_in(struct ofp_header* msg) {
+static void
+process_packet_in(struct ofp_header* msg)
+{
     struct ofputil_packet_in pin;
     if (ofputil_decode_packet_in(&pin, msg) != 0) {
         return;
     }
-
     if (pin.reason == OFPR_ACTION) {
         struct dp_packet packet;
         struct flow flow;
-
         dp_packet_use_const(&packet, pin.packet, pin.packet_len);
         flow_extract(&packet, &flow);
+	
         if (flow.dl_type == htons(ETH_TYPE_IP) && \
             flow.nw_proto == IPPROTO_UDP && \
-            flow.nw_src == INADDR_ANY && \
             flow.nw_dst == INADDR_BROADCAST && \
             flow.tp_src == htons(68) && \
             flow.tp_dst == htons(67)) {
             struct dhcp_header const *dhcp_data = dp_packet_get_udp_payload(&packet);
-            if (dhcp_data->op == 0x01) {
+	    if (dhcp_data->op == 0x01) {
                 /*Send response*/
                 int retval;
                 struct dp_packet out;
                 struct ofputil_packet_out ofpacket_out;
                 struct ofpbuf ofpacts, *buf;
 
+		memset(&ofpacket_out, 0, sizeof ofpacket_out);
                 ofpbuf_init(&ofpacts, 0);
                 ofpbuf_clear(&ofpacts);
                 ofpact_put_OUTPUT(&ofpacts)->port = OFPP_IN_PORT;
 
                 compose_dhcp_response(&flow, dhcp_data, &out);
+
                 ofpacket_out.packet = dp_packet_data(&out);
                 ofpacket_out.packet_len = dp_packet_size(&out);
                 ofpacket_out.buffer_id = UINT32_MAX;
@@ -203,7 +213,9 @@ static void process_packet_in(struct ofp_header* msg) {
 }
 
 
-static void process_packet(struct ofpbuf *msg) {
+static void
+process_packet(struct ofpbuf *msg)
+{
     enum ofptype type;
     struct ofpbuf b;
 
@@ -308,7 +320,9 @@ static void process_packet(struct ofpbuf *msg) {
 }
 
 
-static void send_hello_packet(struct rconn *rconn) {
+static void
+send_hello_packet(struct rconn *rconn)
+{
     struct ofpbuf *ofbuf;
 
     ofbuf = ofputil_encode_hello(rconn_get_allowed_versions(rconn));
@@ -316,7 +330,9 @@ static void send_hello_packet(struct rconn *rconn) {
 }
 
 
-void ofcontroller_run(const struct ovsrec_bridge *br_int) {
+void
+ofcontroller_run(const struct ovsrec_bridge *br_int)
+{
     struct ofpbuf *msg;
     int retval;
     struct vconn *new_vconn = NULL;
@@ -343,10 +359,47 @@ void ofcontroller_run(const struct ovsrec_bridge *br_int) {
 }
 
 
-void ofcontroller_wait(void) {
+void
+ofcontroller_wait(void)
+{
     if (rconn) {
         rconn_run_wait(rconn);
         rconn_recv_wait(rconn);
     }
     pvconn_wait(pvconn);
+}
+
+
+void
+ofcontroller_add_flows(const struct sbrec_port_binding *binding,
+                       struct hmap *flow_table)
+{
+    struct match match;
+    struct ofpbuf ofpacts;
+    struct eth_addr mac;
+    ovs_be32 ipv4;
+    ofpbuf_init(&ofpacts, 0);
+    for (size_t i = 0; i < binding->n_mac; i++) {
+        if (!ovs_scan(binding->mac[i],
+                    ETH_ADDR_SCAN_FMT" "IP_SCAN_FMT,
+                    ETH_ADDR_SCAN_ARGS(mac), IP_SCAN_ARGS(&ipv4))) {
+            continue;
+        }
+        match_init_catchall(&match);
+        ofpbuf_clear(&ofpacts);
+        match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
+        match_set_dl_src(&match, mac);
+        match_set_dl_type(&match, htons(ETH_TYPE_IP));
+        match_set_nw_proto(&match, IPPROTO_UDP);
+        match_set_tp_src(&match, htons(ofp_to_u16(68)));
+        match_set_tp_dst(&match, htons(ofp_to_u16(67)));
+        ofpact_put_SET_IPV4_SRC(&ofpacts)->ipv4 = ipv4;
+        struct ofpact_controller *controller = ofpact_put_CONTROLLER(&ofpacts);
+        controller->max_len = UINT16_MAX;
+        controller->controller_id = 0;
+        controller->reason = OFPR_ACTION;
+
+        ofctrl_add_flow(flow_table, OFTABLE_CONTROLLER, 50,
+                        &match, &ofpacts);
+    }
 }

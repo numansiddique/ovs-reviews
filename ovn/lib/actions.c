@@ -40,6 +40,7 @@ struct action_context {
     uint8_t first_ptable;       /* First OpenFlow table. */
     uint8_t cur_ltable;         /* 0 <= cur_ltable < n_tables. */
     uint8_t output_ptable;      /* OpenFlow table for 'output' to resubmit. */
+    uint8_t controller_ptable;	/* OpenFlow table for 'controller' to resubmit */
 
 /* State. */
     char *error;                /* Error, if any, otherwise NULL. */
@@ -219,6 +220,8 @@ parse_actions(struct action_context *ctx)
             } else {
                 action_syntax_error(ctx, "expecting `--'");
             }
+        } else if (lexer_match_id(ctx->lexer, "controller")) {
+            emit_resubmit(ctx, ctx->controller_ptable);
         } else {
             action_syntax_error(ctx, "expecting action");
         }
@@ -274,7 +277,7 @@ char * OVS_WARN_UNUSED_RESULT
 actions_parse(struct lexer *lexer, const struct shash *symtab,
               const struct simap *ports,
               uint8_t first_ptable, uint8_t n_tables, uint8_t cur_ltable,
-              uint8_t output_ptable, struct ofpbuf *ofpacts,
+              uint8_t output_ptable, uint8_t controller_ptable, struct ofpbuf *ofpacts,
               struct expr **prereqsp)
 {
     size_t ofpacts_start = ofpacts->size;
@@ -287,6 +290,7 @@ actions_parse(struct lexer *lexer, const struct shash *symtab,
     ctx.n_tables = n_tables;
     ctx.cur_ltable = cur_ltable;
     ctx.output_ptable = output_ptable;
+    ctx.controller_ptable = controller_ptable;
     ctx.error = NULL;
     ctx.ofpacts = ofpacts;
     ctx.prereqs = NULL;
@@ -309,7 +313,8 @@ char * OVS_WARN_UNUSED_RESULT
 actions_parse_string(const char *s, const struct shash *symtab,
                      const struct simap *ports, uint8_t first_table,
                      uint8_t n_tables, uint8_t cur_table,
-                     uint8_t output_table, struct ofpbuf *ofpacts,
+                     uint8_t output_table, uint8_t controller_ptable,
+		     struct ofpbuf *ofpacts,
                      struct expr **prereqsp)
 {
     struct lexer lexer;
@@ -318,7 +323,7 @@ actions_parse_string(const char *s, const struct shash *symtab,
     lexer_init(&lexer, s);
     lexer_get(&lexer);
     error = actions_parse(&lexer, symtab, ports, first_table, n_tables,
-                          cur_table, output_table, ofpacts, prereqsp);
+                          cur_table, output_table, controller_ptable, ofpacts, prereqsp);
     lexer_destroy(&lexer);
 
     return error;
