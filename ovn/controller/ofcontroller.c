@@ -57,7 +57,7 @@ static enum ofputil_protocol get_ofp_proto(void) {
 
 
 static void
-get_dhcp_options(char *ret, uint32_t *ret_len)
+get_dhcp_options(char *ret, uint32_t *ret_len, uint8_t dhcp_request_type)
 {
     char *start = ret;
 
@@ -67,7 +67,14 @@ get_dhcp_options(char *ret, uint32_t *ret_len)
     /*Dhcp option - type*/
     ret[0] = (uint8_t)53;
     ret[1] = (uint8_t)1;
-    ret[2] = (uint8_t)0x02;
+    if (dhcp_request_type == 0x01) {
+	/* DHCP DISCOVER. Set the dhcp message type as DHCP OFFER */
+	ret[2] = (uint8_t)0x02;
+    }
+    else {
+	/* request is 'REQUEST', set the message type as DHCP ACK */
+	ret[2] = (uint8_t)0x05;
+    }
     ret += 3;
 
     /*Dhcp server id*/
@@ -113,13 +120,14 @@ get_dhcp_options(char *ret, uint32_t *ret_len)
 static void
 compose_dhcp_response(struct flow *in_flow,
                       struct dhcp_header const *in_dhcp,
-                      struct dp_packet *out_packet)
+                      struct dp_packet *out_packet,
+		      uint8_t dhcp_request_type)
 {
     struct flow out_flow;
     struct eth_addr eth_addr = {.ea = {0x9a, 0x56, 0x02, 0x53, 0xc2, 0x40}};
     char options[128];
     uint32_t options_len = 0;
-    get_dhcp_options(options, &options_len);
+    get_dhcp_options(options, &options_len, dhcp_request_type);
 
     dp_packet_clear(out_packet);
     dp_packet_prealloc_tailroom(out_packet,
@@ -165,6 +173,20 @@ compose_dhcp_response(struct flow *in_flow,
 }
 
 
+static inline bool
+is_dhcp_packet(struct flow *flow)
+{
+  if (flow->dl_type == htons(ETH_TYPE_IP) && \
+  	flow->nw_proto == IPPROTO_UDP && \
+  	flow->nw_dst == INADDR_BROADCAST && \
+  	flow->tp_src == htons(DHCP_CLIENT_PORT) && \
+  	flow->tp_dst == htons(DHCP_SERVER_PORT)) {
+      return true;
+  }
+  return false;
+}
+
+
 static void
 process_packet_in(struct ofp_header* msg)
 {
@@ -172,44 +194,48 @@ process_packet_in(struct ofp_header* msg)
     if (ofputil_decode_packet_in(&pin, msg) != 0) {
         return;
     }
-    if (pin.reason == OFPR_ACTION) {
-        struct dp_packet packet;
-        struct flow flow;
-        dp_packet_use_const(&packet, pin.packet, pin.packet_len);
-        flow_extract(&packet, &flow);
-	
-        if (flow.dl_type == htons(ETH_TYPE_IP) && \
-            flow.nw_proto == IPPROTO_UDP && \
-            flow.nw_dst == INADDR_BROADCAST && \
-            flow.tp_src == htons(68) && \
-            flow.tp_dst == htons(67)) {
-            struct dhcp_header const *dhcp_data = dp_packet_get_udp_payload(&packet);
-	    if (dhcp_data->op == 0x01) {
-                /*Send response*/
-                int retval;
-                struct dp_packet out;
-                struct ofputil_packet_out ofpacket_out;
-                struct ofpbuf ofpacts, *buf;
-
-		memset(&ofpacket_out, 0, sizeof ofpacket_out);
-                ofpbuf_init(&ofpacts, 0);
-                ofpbuf_clear(&ofpacts);
-                ofpact_put_OUTPUT(&ofpacts)->port = OFPP_IN_PORT;
-
-                compose_dhcp_response(&flow, dhcp_data, &out);
-
-                ofpacket_out.packet = dp_packet_data(&out);
-                ofpacket_out.packet_len = dp_packet_size(&out);
-                ofpacket_out.buffer_id = UINT32_MAX;
-                ofpacket_out.in_port = pin.flow_metadata.flow.in_port.ofp_port;
-                ofpacket_out.ofpacts = ofpacts.data;
-                ofpacket_out.ofpacts_len = ofpacts.size;
-                buf = ofputil_encode_packet_out(&ofpacket_out, get_ofp_proto());
-                retval = rconn_send(rconn, buf, NULL);
-                ofpbuf_uninit(&ofpacts);
-            }
-        }
+    if (pin.reason != OFPR_ACTION) {
+	return;
     }
+    struct dp_packet packet;
+    struct flow flow;
+    dp_packet_use_const(&packet, pin.packet, pin.packet_len);
+    flow_extract(&packet, &flow);
+
+    if (!is_dhcp_packet(&flow)) {
+	return;
+    }
+    struct dhcp_header const *dhcp_data = dp_packet_get_udp_payload(&packet);
+    if (dhcp_data->op != 0x01) {
+	return;
+    }
+    /*Send response*/
+    int retval;
+    struct dp_packet out;
+    struct ofputil_packet_out ofpacket_out;
+    struct ofpbuf ofpacts, *buf;
+    char *dhcp_options = (char *) ((void *)dhcp_data + sizeof(*dhcp_data));
+    int dhcp_message_type = dhcp_options[6]; /* 4 byte cookie + 1 byte message type + 1 byte length */
+    if (dhcp_message_type != 0x01 && dhcp_message_type != 0x03) {
+	return;
+    }
+
+    ofpbuf_init(&ofpacts, 0);
+    ofpbuf_clear(&ofpacts);
+    ofpact_put_OUTPUT(&ofpacts)->port = OFPP_IN_PORT;
+
+    compose_dhcp_response(&flow, dhcp_data, &out, dhcp_message_type);
+
+    ofpacket_out.packet = dp_packet_data(&out);
+    ofpacket_out.packet_len = dp_packet_size(&out);
+    ofpacket_out.buffer_id = UINT32_MAX;
+    ofpacket_out.in_port = pin.flow_metadata.flow.in_port.ofp_port;
+    ofpacket_out.ofpacts = ofpacts.data;
+    ofpacket_out.ofpacts_len = ofpacts.size;
+    buf = ofputil_encode_packet_out(&ofpacket_out, get_ofp_proto());
+    retval = rconn_send(rconn, buf, NULL);
+    ofpbuf_uninit(&ofpacts);
+
 }
 
 
