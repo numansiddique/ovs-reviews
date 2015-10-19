@@ -483,14 +483,14 @@ physical_run(struct controller_ctx *ctx, enum mf_field_id mff_ovn_geneve,
                         &match, &ofpacts);
 
         /* Table 35, Priority 50.
-	 * =====================
-	 * Add the flows to forward packets to the controller
-	 *
-	 */
-	  if (binding->chassis && binding->chassis->name &&
-	      (!strcmp(binding->chassis->name, this_chassis_id))) {
-	      ofcontroller_add_flows(binding, flow_table);
-	  }
+         * =====================
+         * Add the flows to forward packets to the controller
+         *
+         */
+        if (binding->chassis && binding->chassis->name &&
+            (!strcmp(binding->chassis->name, this_chassis_id))) {
+            ofcontroller_add_flows(binding, flow_table);
+        }
 
     }
 

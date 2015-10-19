@@ -14,6 +14,7 @@
  */
 
 #include <config.h>
+#include "csum.h"
 #include "dp-packet.h"
 #include "dhcp.h"
 #include "lflow.h"
@@ -22,6 +23,7 @@
 #include "ofp-version-opt.h"
 #include "ofp-util.h"
 #include "ofp-msgs.h"
+#include "ofctrl.h"
 #include "socket-util.h"
 #include "openflow/openflow.h"
 #include "openvswitch/vconn.h"
@@ -68,12 +70,12 @@ get_dhcp_options(char *ret, uint32_t *ret_len, uint8_t dhcp_request_type)
     ret[0] = (uint8_t)53;
     ret[1] = (uint8_t)1;
     if (dhcp_request_type == 0x01) {
-	/* DHCP DISCOVER. Set the dhcp message type as DHCP OFFER */
-	ret[2] = (uint8_t)0x02;
+        /* DHCP DISCOVER. Set the dhcp message type as DHCP OFFER */
+        ret[2] = (uint8_t)0x02;
     }
     else {
-	/* request is 'REQUEST', set the message type as DHCP ACK */
-	ret[2] = (uint8_t)0x05;
+        /* DHCP REQUEST, set the message type as DHCP ACK */
+        ret[2] = (uint8_t)0x05;
     }
     ret += 3;
 
@@ -100,7 +102,7 @@ get_dhcp_options(char *ret, uint32_t *ret_len, uint8_t dhcp_request_type)
     ret[1] = (uint8_t)4;
     *((uint32_t *)&ret[2]) = htonl(0x00000e10);
     ret += 6;
-#if 1
+
     /*Padding*/
     *((uint32_t *)ret) = 0x00000;
     ret += 4;
@@ -112,7 +114,7 @@ get_dhcp_options(char *ret, uint32_t *ret_len, uint8_t dhcp_request_type)
     /*Padding*/
     *((uint32_t *)ret) = 0x00000;
     ret += 4;
-#endif
+
     *ret_len = (ret - start);
 }
 
@@ -121,9 +123,8 @@ static void
 compose_dhcp_response(struct flow *in_flow,
                       struct dhcp_header const *in_dhcp,
                       struct dp_packet *out_packet,
-		      uint8_t dhcp_request_type)
+                      uint8_t dhcp_request_type)
 {
-    struct flow out_flow;
     struct eth_addr eth_addr = {.ea = {0x9a, 0x56, 0x02, 0x53, 0xc2, 0x40}};
     char options[128];
     uint32_t options_len = 0;
@@ -159,7 +160,7 @@ compose_dhcp_response(struct flow *in_flow,
     dhcp = dp_packet_put_zeros(out_packet, sizeof(*dhcp));
     memcpy(dhcp, in_dhcp, sizeof(struct dhcp_header));
     dhcp->op = 0x02;
-    dhcp->yiaddr = in_flow->nw_src; //HACK
+    dhcp->yiaddr = in_flow->nw_src;
 
     void * opts = dp_packet_put_zeros(out_packet, options_len);
     memcpy(opts, options, options_len);
@@ -177,13 +178,38 @@ static inline bool
 is_dhcp_packet(struct flow *flow)
 {
   if (flow->dl_type == htons(ETH_TYPE_IP) && \
-  	flow->nw_proto == IPPROTO_UDP && \
-  	flow->nw_dst == INADDR_BROADCAST && \
-  	flow->tp_src == htons(DHCP_CLIENT_PORT) && \
-  	flow->tp_dst == htons(DHCP_SERVER_PORT)) {
+      flow->nw_proto == IPPROTO_UDP && \
+      flow->nw_dst == INADDR_BROADCAST && \
+      flow->tp_src == htons(DHCP_CLIENT_PORT) && \
+      flow->tp_dst == htons(DHCP_SERVER_PORT)) {
       return true;
   }
   return false;
+}
+
+
+static uint8_t get_dhcp_message_type(struct dhcp_header const *dhcp_data, size_t size) {
+    struct dhcp_option_header {
+        uint8_t option;
+        uint8_t len;
+    };
+#define OPTION_PAYLOAD(opt) ((char *)opt + sizeof(struct dhcp_option_header))
+    char const *footer = (char *)dhcp_data + sizeof(*dhcp_data);
+    uint32_t cookie = *(uint32_t *)footer;
+
+    if (cookie != htonl(0x63825363))
+        /*Cookie validation failed*/
+        return (uint8_t)-1;
+    footer += sizeof(uint32_t);
+
+    for (struct dhcp_option_header const *opt = (struct dhcp_option_header *)footer;
+         footer < (char *)dhcp_data + size;
+         footer += (sizeof(*opt) + opt->len)) {
+        if (opt->option == 53) {
+            return *(uint8_t *)OPTION_PAYLOAD(opt);
+        }
+    }
+    return (uint8_t)-1;
 }
 
 
@@ -195,29 +221,28 @@ process_packet_in(struct ofp_header* msg)
         return;
     }
     if (pin.reason != OFPR_ACTION) {
-	return;
+        return;
     }
     struct dp_packet packet;
     struct flow flow;
     dp_packet_use_const(&packet, pin.packet, pin.packet_len);
     flow_extract(&packet, &flow);
-
     if (!is_dhcp_packet(&flow)) {
-	return;
+        return;
     }
+
+
     struct dhcp_header const *dhcp_data = dp_packet_get_udp_payload(&packet);
     if (dhcp_data->op != 0x01) {
-	return;
+        return;
     }
     /*Send response*/
-    int retval;
     struct dp_packet out;
     struct ofputil_packet_out ofpacket_out;
     struct ofpbuf ofpacts, *buf;
-    char *dhcp_options = (char *) ((void *)dhcp_data + sizeof(*dhcp_data));
-    int dhcp_message_type = dhcp_options[6]; /* 4 byte cookie + 1 byte message type + 1 byte length */
+    uint8_t dhcp_message_type = get_dhcp_message_type(dhcp_data, dp_packet_l4_size(&packet));
     if (dhcp_message_type != 0x01 && dhcp_message_type != 0x03) {
-	return;
+        return;
     }
 
     ofpbuf_init(&ofpacts, 0);
@@ -233,9 +258,8 @@ process_packet_in(struct ofp_header* msg)
     ofpacket_out.ofpacts = ofpacts.data;
     ofpacket_out.ofpacts_len = ofpacts.size;
     buf = ofputil_encode_packet_out(&ofpacket_out, get_ofp_proto());
-    retval = rconn_send(rconn, buf, NULL);
+    rconn_send(rconn, buf, NULL);
     ofpbuf_uninit(&ofpacts);
-
 }
 
 
@@ -342,7 +366,6 @@ process_packet(struct ofpbuf *msg)
         default:
             break;
     }
-
 }
 
 

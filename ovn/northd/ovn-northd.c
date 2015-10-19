@@ -1025,7 +1025,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
     }
     HMAP_FOR_EACH (od, key_node, datapaths) {
         ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 150,
-		      "ip4 && udp && udp.src == 68 && udp.dst == 67",
+                      "ip4 && udp && udp.src == 68 && udp.dst == 67",
                       "controller;");
         ovn_lflow_add(lflows, od, S_SWITCH_IN_L2_LKUP, 100, "eth.mcast",
                       "outport = \""MC_FLOOD"\"; output;");

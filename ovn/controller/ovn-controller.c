@@ -98,6 +98,38 @@ static char const* get_switch_controller_path(void) {
     return path;
 }
 
+static void ovsrec_set_controller(struct controller_ctx *ctx,
+                                  struct ovsrec_bridge const*br) {
+    struct ovsrec_controller *controller;
+    struct ovsdb_datum const*bctrl, *target;
+    bool set = false;
+    static char *proto = NULL;
+
+    if (!proto)
+        proto = xasprintf("unix:%s", get_switch_controller_path());
+
+    if (!br || !ctx || !ctx->ovs_idl_txn || !ctx->ovs_idl)
+        return;
+
+    ovsrec_bridge_verify_controller(br);
+    bctrl = ovsrec_bridge_get_controller(br, OVSDB_TYPE_UUID);
+    if (bctrl && bctrl->n > 0) {
+        struct ovsrec_controller const *ctrler;
+        ctrler = ovsrec_controller_get_for_uuid(ctx->ovs_idl, &bctrl->keys[0].uuid);
+        target = ovsrec_controller_get_target(ctrler, OVSDB_TYPE_STRING);
+        if (strcmp(target->keys[0].string, proto) != 0) {
+            set = true;
+        }
+    } else
+        set = true;
+
+    if (set) {
+        controller = ovsrec_controller_insert(ctx->ovs_idl_txn);
+        ovsrec_controller_set_target(controller, proto);
+        ovsrec_bridge_set_controller(br, &controller, 1);
+    }
+}
+
 static const struct ovsrec_bridge *
 create_br_int(struct controller_ctx *ctx,
               const struct ovsrec_open_vswitch *cfg,
@@ -136,13 +168,6 @@ create_br_int(struct controller_ctx *ctx,
     ovsrec_open_vswitch_verify_bridges(cfg);
     ovsrec_open_vswitch_set_bridges(cfg, bridges, cfg->n_bridges + 1);
 
-    struct ovsrec_controller *controller;
-    char *proto = xasprintf("unix:%s", get_switch_controller_path());
-    controller = ovsrec_controller_insert(ctx->ovs_idl_txn);
-    ovsrec_controller_set_target(controller, proto);
-    ovsrec_bridge_set_controller(bridge, &controller, 1);
-    free(proto);
-
     return bridge;
 }
 
@@ -163,8 +188,9 @@ get_br_int(struct controller_ctx *ctx)
     const struct ovsrec_bridge *br;
     br = get_bridge(ctx->ovs_idl, br_int_name);
     if (!br) {
-        return create_br_int(ctx, cfg, br_int_name);
+        br = create_br_int(ctx, cfg, br_int_name);
     }
+    ovsrec_set_controller(ctx, br);
     return br;
 }
 
@@ -273,9 +299,9 @@ main(int argc, char *argv[])
             .ovnsb_idl = ovnsb_idl_loop.idl,
             .ovnsb_idl_txn = ovsdb_idl_loop_run(&ovnsb_idl_loop),
         };
+        const char *chassis_id = get_chassis_id(ctx.ovs_idl);
 
         const struct ovsrec_bridge *br_int = get_br_int(&ctx);
-        const char *chassis_id = get_chassis_id(ctx.ovs_idl);
 
         /* Map bridges to local nets from ovn-bridge-mappings */
         if (br_int) {

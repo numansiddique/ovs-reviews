@@ -314,7 +314,7 @@ actions_parse_string(const char *s, const struct shash *symtab,
                      const struct simap *ports, uint8_t first_table,
                      uint8_t n_tables, uint8_t cur_table,
                      uint8_t output_table, uint8_t controller_ptable,
-		     struct ofpbuf *ofpacts,
+                     struct ofpbuf *ofpacts,
                      struct expr **prereqsp)
 {
     struct lexer lexer;
