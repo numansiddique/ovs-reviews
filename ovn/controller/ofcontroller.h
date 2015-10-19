@@ -10,5 +10,9 @@ void ofcontroller_run(const struct ovsrec_bridge *br_int);
 void ofcontroller_wait(void);
 void ofcontroller_destroy(void);
 
-
+/*
+* Add flows to forward the packets to the controller.
+*/
+void ofcontroller_add_flows(const struct sbrec_port_binding *binding,
+                            struct hmap *flow_table);
 #endif

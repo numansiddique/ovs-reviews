@@ -1226,7 +1226,7 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
 
         ofpbuf_init(&ofpacts, 0);
         error = actions_parse_string(ds_cstr(&input), &symtab, &ports,
-                                     16, 16, 10, 64, &ofpacts, &prereqs);
+                                     16, 16, 10, 64, 35, &ofpacts, &prereqs);
         if (!error) {
             struct ds output;
 
