@@ -111,7 +111,6 @@ static void ovsrec_set_controller(struct controller_ctx *ctx,
     if (!br || !ctx || !ctx->ovs_idl_txn || !ctx->ovs_idl)
         return;
 
-    ovsrec_bridge_verify_controller(br);
     bctrl = ovsrec_bridge_get_controller(br, OVSDB_TYPE_UUID);
     if (bctrl && bctrl->n > 0) {
         struct ovsrec_controller const *ctrler;
@@ -240,6 +239,8 @@ main(int argc, char *argv[])
     parse_options(argc, argv);
     fatal_ignore_sigpipe();
 
+    daemon_save_fd(1);
+    daemon_save_fd(2);
     daemonize_start(false);
 
     retval = unixctl_server_create(NULL, &unixctl);
@@ -278,6 +279,10 @@ main(int argc, char *argv[])
     ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_name);
     ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_fail_mode);
     ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_other_config);
+    ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_bridge_col_controller);
+    ovsdb_idl_add_table(ovs_idl_loop.idl, &ovsrec_table_controller);
+    ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_controller_col_target);
+    ovsdb_idl_add_column(ovs_idl_loop.idl, &ovsrec_controller_col_is_connected);
     chassis_register_ovs_idl(ovs_idl_loop.idl);
     encaps_register_ovs_idl(ovs_idl_loop.idl);
     binding_register_ovs_idl(ovs_idl_loop.idl);
