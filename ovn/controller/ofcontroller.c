@@ -49,6 +49,8 @@ struct rconn *rconn = NULL;
 
 #define DHCP_MAGIC_COOKIE (uint32_t)0x63825363
 
+#define DHCP_DEFAULT_NETMASK (uint32_t)0xFFFFFF00
+
 #define DHCP_OP_REQUEST  ((uint8_t)1)
 #define DHCP_OP_REPLY    ((uint8_t)2)
 
@@ -60,7 +62,7 @@ struct rconn *rconn = NULL;
 
 #define DHCP_OPT_MSG_TYPE    ((uint8_t)53)
 #define DHCP_OPT_SERVER_ID   ((uint8_t)54)
-#define DHCP_OPT_SUBNET_MASK ((uint8_t)1)
+#define DHCP_OPT_NETMASK ((uint8_t)1)
 #define DHCP_OPT_ROUTER      ((uint8_t)3)
 #define DHCP_OPT_LEASE_TIME  ((uint8_t)51)
 #define DHCP_OPT_END         ((uint8_t)255)
@@ -78,8 +80,8 @@ struct dhcp_packet_ctx {
     struct ofputil_packet_in *pin;
     struct flow *flow;
     struct dp_packet *packet;
-    struct sbrec_port_binding *binding;
-    struct dhcp_option_header  *param_req_list;
+    const struct sbrec_port_binding *binding;
+    struct dhcp_option_header  const *param_req_list;
     uint8_t message_type;
     ovs_be32 requested_ipv4;
     ovs_be32 offered_ipv4;
@@ -95,95 +97,51 @@ ofcontroller_init(char const *sock_path)
 }
 
 
-static enum ofputil_protocol get_ofp_proto(void) {
+static enum ofputil_protocol
+get_ofp_proto(void)
+{
     enum ofp_version version;
     version = rconn_get_version(rconn);
     return ofputil_protocol_from_ofp_version(version);
 }
 
 
-#if 0
-static void
-get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
-{
-    char *start = ret;
+static char *
+get_dhcp_opt_from_port_options(const struct sbrec_port_binding *binding, uint8_t dhcp_option) {
+    struct smap_node *node;
+    char *dhcp_opt_key = NULL;
 
-     /*Magic cookie*/
-     *(uint32_t *)ret = htonl(DHCP_MAGIC_COOKIE);
-     ret += (sizeof(uint32_t));
+    switch(dhcp_option) {
+    case DHCP_OPT_NETMASK:
+	dhcp_opt_key = "dhcp_opt_netmask";
+	break;
 
-     /*Dhcp option - type*/
-     ret[0] = (uint8_t)DHCP_OPT_MSG_TYPE;
-     ret[1] = (uint8_t)1;
-     if (ctx->message_type == DHCP_MSG_DISCOVER) {
-         /* DHCP DISCOVER. Set the dhcp message type as DHCP OFFER */
-         ret[2] = (uint8_t)DHCP_MSG_OFFER;
-     }
-     else {
-         /* DHCP REQUEST, set the message type as DHCP ACK */
-         ret[2] = (uint8_t)DHCP_MSG_ACK;
-     }
-     ret += 3;
+    case DHCP_OPT_ROUTER:
+	dhcp_opt_key = "dhcp_opt_router";
+	break;
 
+    default:
+	break;
+    }
 
-    /*Dhcp server id*/
-    ret[0] = (uint8_t)DHCP_OPT_SERVER_ID;
-    ret[1] = (uint8_t)4;
-    *((uint32_t *)&ret[2]) = htonl(DHCP_SERVER_ID);
-    ret += 6;
-
-
-    char *param_req = OPTION_PAYLOAD(ctx->param_req_list);
-
-    for (size_t i = 0; i < ctx->param_req_list->len; i++) {
-	switch(param_req[i]) {
-	case 1: /* subnet mask */
-	{
-	    ret[0] = (uint8_t)DHCP_OPT_SUBNET_MASK;
-	    ret[1] = (uint8_t)4;
-	    *((uint32_t *)&ret[2]) = htonl(0xFFFFFF00);
-	    ret += 6;
-	    break;
-	}
-	case 3: /* router */
-	{
-	    ret[0] = (uint8_t)DHCP_OPT_ROUTER;
-	    ret[1] = (uint8_t)4;
-	    *((uint32_t *)&ret[2]) = htonl(0xC0A80101);
-	    ret += 6;
-	    break;
-	}
-	case 51:
-	{
-	    ret[0] = (uint8_t)DHCP_OPT_LEASE_TIME;
-	    ret[1] = (uint8_t)4;
-	    *((uint32_t *)&ret[2]) = htonl(DHCP_LEASE_PERIOD);
-	    ret += 6;
-	}
+    if (dhcp_opt_key) {
+	SMAP_FOR_EACH(node, &binding->options) {
+	    if(!strcmp(node->key, dhcp_opt_key)) {
+		return node->value;
+	    }
 	}
     }
 
-    //*Padding*/
-    *((uint32_t *)ret) = 0;
-    ret += 4;
-
-    /*End*/
-    ret[0] = DHCP_OPT_END;
-    ret += 1;
-
-    /*Padding*/
-    *((uint32_t *)ret) = 0;
-    ret += 4;
-
-    *ret_len = (ret - start);
-
+    return NULL;
 }
-#else
+
+
 static void
 get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
 {
     char *start = ret;
-
+    ovs_be32 ip_addr;
+    char *dhcp_opt_value;
     /*Magic cookie*/
     *(uint32_t *)ret = htonl(DHCP_MAGIC_COOKIE);
     ret += (sizeof(uint32_t));
@@ -202,22 +160,33 @@ get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
     }
     ret += 3;
 
-    /*Dhcp server id*/
+    /* Dhcp server id*/
     ret[0] = (uint8_t)DHCP_OPT_SERVER_ID;
     ret[1] = (uint8_t)4;
     *((uint32_t *)&ret[2]) = htonl(DHCP_SERVER_ID);
     ret += 6;
 
-    /*Subnet mask*/
-    ret[0] = (uint8_t)DHCP_OPT_SUBNET_MASK;
+    /* net mask*/
+    ret[0] = (uint8_t)DHCP_OPT_NETMASK;
     ret[1] = (uint8_t)4;
-    *((uint32_t *)&ret[2]) = htonl(0xFFFFFF00);
+    dhcp_opt_value = get_dhcp_opt_from_port_options(ctx->binding, DHCP_OPT_NETMASK);
+
+    ip_addr = htonl(DHCP_DEFAULT_NETMASK);
+    if (dhcp_opt_value) {
+	ovs_scan(dhcp_opt_value, IP_SCAN_FMT, IP_SCAN_ARGS(&ip_addr));
+    }
+    *((uint32_t *)&ret[2]) = ip_addr;
     ret += 6;
 
     /*Router*/
+    ip_addr = 0; /* default value */
     ret[0] = (uint8_t)DHCP_OPT_ROUTER;
     ret[1] = (uint8_t)4;
-    *((uint32_t *)&ret[2]) = htonl(0xC0A80101);
+    dhcp_opt_value = get_dhcp_opt_from_port_options(ctx->binding, DHCP_OPT_ROUTER);
+    if (dhcp_opt_value) {
+    	ovs_scan(dhcp_opt_value, IP_SCAN_FMT, IP_SCAN_ARGS(&ip_addr));
+    }
+    *((uint32_t *)&ret[2]) = ip_addr;
     ret += 6;
 
     /*Lease*/
@@ -225,6 +194,8 @@ get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
     ret[1] = (uint8_t)4;
     *((uint32_t *)&ret[2]) = htonl(DHCP_LEASE_PERIOD);
     ret += 6;
+
+    /* TODO :  Need to support other dhcp options */
 
     /*Padding*/
     *((uint32_t *)ret) = 0;
@@ -241,10 +212,8 @@ get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
     *ret_len = (ret - start);
 }
 
-#endif
 
-
-static struct sbrec_port_binding *
+static const struct sbrec_port_binding *
 get_sbrec_port_binding_for_mac(struct dhcp_packet_ctx *ctx)
 {
     const struct sbrec_port_binding *binding;
@@ -273,9 +242,9 @@ compose_dhcp_response(struct dhcp_packet_ctx *ctx,
     struct eth_addr eth_addr = {.ea = {0x9a, 0x56, 0x02, 0x53, 0xc2, 0x40}};
     char options[128];
     uint32_t options_length = 0;
-    ovs_be32 offer_ipv4 = 0;
     memset(options, 0, sizeof(options));
-    get_dhcp_options(ctx, &options, &options_length);
+
+    get_dhcp_options(ctx, options, &options_length);
 
     size_t out_packet_length = ETH_HEADER_LEN + IP_HEADER_LEN + \
 			       UDP_HEADER_LEN + DHCP_HEADER_LEN + options_length;
@@ -348,7 +317,6 @@ process_dhcp_packet(struct dhcp_packet_ctx *ctx)
     struct dp_packet out;
     struct ofputil_packet_out ofpacket_out;
     struct ofpbuf ofpacts, *buf;
-    ovs_be32 requested_ipv4 = 0;
 
     char const *footer = (char *)dhcp_data + sizeof(*dhcp_data);
 
@@ -365,8 +333,6 @@ process_dhcp_packet(struct dhcp_packet_ctx *ctx)
     }
 
     footer += sizeof(uint32_t);
-    struct dhcp_option_header const * param_list = NULL;
-    uint8_t dhcp_message_type;
     size_t dhcp_data_size = dp_packet_l4_size(ctx->packet);
     for (struct dhcp_option_header const *opt = (struct dhcp_option_header *)footer;
         footer < (char *)dhcp_data + dhcp_data_size;
