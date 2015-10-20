@@ -306,7 +306,7 @@ main(int argc, char *argv[])
         /* Map bridges to local nets from ovn-bridge-mappings */
         if (br_int) {
             patch_run(&ctx, br_int);
-            ofcontroller_run(br_int);
+            ofcontroller_run(&ctx, br_int);
         }
 
         if (chassis_id) {
