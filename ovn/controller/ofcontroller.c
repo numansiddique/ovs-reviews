@@ -191,6 +191,7 @@ get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
     /*Dhcp option - type*/
     ret[0] = (uint8_t)DHCP_OPT_MSG_TYPE;
     ret[1] = (uint8_t)1;
+
     if (ctx->message_type == DHCP_MSG_DISCOVER) {
         /* DHCP DISCOVER. Set the dhcp message type as DHCP OFFER */
         ret[2] = (uint8_t)DHCP_MSG_OFFER;
@@ -214,30 +215,30 @@ get_dhcp_options(struct dhcp_packet_ctx *ctx, char *ret, uint32_t *ret_len)
     ret += 6;
 
     /*Router*/
-        ret[0] = (uint8_t)DHCP_OPT_ROUTER;
-        ret[1] = (uint8_t)4;
-        *((uint32_t *)&ret[2]) = htonl(0xC0A80101);
-        ret += 6;
+    ret[0] = (uint8_t)DHCP_OPT_ROUTER;
+    ret[1] = (uint8_t)4;
+    *((uint32_t *)&ret[2]) = htonl(0xC0A80101);
+    ret += 6;
 
-        /*Lease*/
-        ret[0] = (uint8_t)DHCP_OPT_LEASE_TIME;
-        ret[1] = (uint8_t)4;
-        *((uint32_t *)&ret[2]) = htonl(DHCP_LEASE_PERIOD);
-        ret += 6;
+    /*Lease*/
+    ret[0] = (uint8_t)DHCP_OPT_LEASE_TIME;
+    ret[1] = (uint8_t)4;
+    *((uint32_t *)&ret[2]) = htonl(DHCP_LEASE_PERIOD);
+    ret += 6;
 
-        /*Padding*/
-        *((uint32_t *)ret) = 0;
-        ret += 4;
+    /*Padding*/
+    *((uint32_t *)ret) = 0;
+    ret += 4;
 
-        /*End*/
-        ret[0] = DHCP_OPT_END;
-        ret += 1;
+    /*End*/
+    ret[0] = DHCP_OPT_END;
+    ret += 1;
 
-        /*Padding*/
-        *((uint32_t *)ret) = 0;
-        ret += 4;
+    /*Padding*/
+    *((uint32_t *)ret) = 0;
+    ret += 4;
 
-        *ret_len = (ret - start);
+    *ret_len = (ret - start);
 }
 
 #endif
@@ -301,12 +302,12 @@ compose_dhcp_response(struct dhcp_packet_ctx *ctx,
 
     struct udp_header *udp;
     udp = dp_packet_put_zeros(out_packet, sizeof(*udp));
-    udp->udp_src = htons(ofp_to_u16(67));
-    udp->udp_dst = htons(ofp_to_u16(68));
+    udp->udp_src = htons(ofp_to_u16(DHCP_SERVER_PORT));
+    udp->udp_dst = htons(ofp_to_u16(DHCP_CLIENT_PORT));
     struct dhcp_header * dhcp;
     dhcp = dp_packet_put_zeros(out_packet, sizeof(*dhcp));
     memcpy(dhcp, in_dhcp, sizeof(struct dhcp_header));
-    dhcp->op = 0x02;
+    dhcp->op = DHCP_OP_REPLY;
     dhcp->yiaddr = ctx->offered_ipv4;
 
     void * opts = dp_packet_put_zeros(out_packet, options_length);
@@ -316,7 +317,6 @@ compose_dhcp_response(struct dhcp_packet_ctx *ctx,
     udp->udp_len = htons(ofp_to_u16(udp_len));
     ip->ip_tot_len = htons(ofp_to_u16(IP_HEADER_LEN + udp_len));
     ip->ip_csum = csum(ip, sizeof *ip);
-    udp->udp_csum = csum(udp, sizeof(*dhcp) + options_length + UDP_HEADER_LEN);
     udp->udp_csum = 0;
     return true;
 }
@@ -354,7 +354,7 @@ process_dhcp_packet(struct dhcp_packet_ctx *ctx)
 
     uint32_t cookie = *(uint32_t *)footer;
 
-    if (cookie != htonl(0x63825363)) {
+    if (cookie != htonl(DHCP_MAGIC_COOKIE)) {
 	/*Cookie validation failed */
 	return;
     }
