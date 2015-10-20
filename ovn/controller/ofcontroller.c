@@ -41,6 +41,29 @@ struct pvconn * pvconn;
 /* Remote connection from the switch */
 struct rconn *rconn = NULL;
 
+#define DHCP_SERVER_ID     ((uint32_t)0x01010101)
+#define DHCP_LEASE_PERIOD  ((uint32_t)60*60*24)  /*1 day*/
+
+#define DHCP_CLIENT_PORT 68
+#define DHCP_SERVER_PORT 67
+
+#define DHCP_MAGIC_COOKIE (uint32_t)0x63825363
+
+#define DHCP_OP_REQUEST  ((uint8_t)1)
+#define DHCP_OP_REPLY    ((uint8_t)2)
+
+#define DHCP_MSG_DISCOVER ((uint8_t)1)
+#define DHCP_MSG_OFFER    ((uint8_t)2)
+#define DHCP_MSG_REQUEST  ((uint8_t)3)
+#define DHCP_MSG_ACK      ((uint8_t)5)
+#define DHCP_MSG_NACK     ((uint8_t)6)
+
+#define DHCP_OPT_MSG_TYPE    ((uint8_t)53)
+#define DHCP_OPT_SERVER_ID   ((uint8_t)54)
+#define DHCP_OPT_SUBNET_MASK ((uint8_t)1)
+#define DHCP_OPT_ROUTER      ((uint8_t)3)
+#define DHCP_OPT_LEASE_TIME  ((uint8_t)51)
+#define DHCP_OPT_END         ((uint8_t)255)
 
 void
 ofcontroller_init(char const *sock_path)
@@ -63,56 +86,57 @@ get_dhcp_options(char *ret, uint32_t *ret_len, uint8_t dhcp_request_type)
 {
     char *start = ret;
 
-    *(uint32_t *)ret = htonl(0x63825363); /*magic cookie*/
+    /*Magic cookie*/
+    *(uint32_t *)ret = htonl(DHCP_MAGIC_COOKIE);
     ret += (sizeof(uint32_t));
 
     /*Dhcp option - type*/
-    ret[0] = (uint8_t)53;
+    ret[0] = (uint8_t)DHCP_OPT_MSG_TYPE;
     ret[1] = (uint8_t)1;
-    if (dhcp_request_type == 0x01) {
+    if (dhcp_request_type == DHCP_MSG_DISCOVER) {
         /* DHCP DISCOVER. Set the dhcp message type as DHCP OFFER */
-        ret[2] = (uint8_t)0x02;
+        ret[2] = (uint8_t)DHCP_MSG_OFFER;
     }
     else {
         /* DHCP REQUEST, set the message type as DHCP ACK */
-        ret[2] = (uint8_t)0x05;
+        ret[2] = (uint8_t)DHCP_MSG_ACK;
     }
     ret += 3;
 
     /*Dhcp server id*/
-    ret[0] = (uint8_t)54;
+    ret[0] = (uint8_t)DHCP_OPT_SERVER_ID;
     ret[1] = (uint8_t)4;
-    *((uint32_t *)&ret[2]) = htonl(0x01010101);
+    *((uint32_t *)&ret[2]) = htonl(DHCP_SERVER_ID);
     ret += 6;
 
     /*Subnet mask*/
-    ret[0] = (uint8_t)1;
+    ret[0] = (uint8_t)DHCP_OPT_SUBNET_MASK;
     ret[1] = (uint8_t)4;
     *((uint32_t *)&ret[2]) = htonl(0xFFFFFF00);
     ret += 6;
 
     /*Router*/
-    ret[0] = (uint8_t)3;
+    ret[0] = (uint8_t)DHCP_OPT_ROUTER;
     ret[1] = (uint8_t)4;
     *((uint32_t *)&ret[2]) = htonl(0xC0A80101);
     ret += 6;
 
     /*Lease*/
-    ret[0] = (uint8_t)51;
+    ret[0] = (uint8_t)DHCP_OPT_LEASE_TIME;
     ret[1] = (uint8_t)4;
-    *((uint32_t *)&ret[2]) = htonl(0x00000e10);
+    *((uint32_t *)&ret[2]) = htonl(DHCP_LEASE_PERIOD);
     ret += 6;
 
     /*Padding*/
-    *((uint32_t *)ret) = 0x00000;
+    *((uint32_t *)ret) = 0;
     ret += 4;
 
     /*End*/
-    ret[0] = 0xFF;
+    ret[0] = DHCP_OPT_END;
     ret += 1;
 
     /*Padding*/
-    *((uint32_t *)ret) = 0x00000;
+    *((uint32_t *)ret) = 0;
     ret += 4;
 
     *ret_len = (ret - start);
@@ -154,12 +178,12 @@ compose_dhcp_response(struct flow *in_flow,
 
     struct udp_header *udp;
     udp = dp_packet_put_zeros(out_packet, sizeof(*udp));
-    udp->udp_src = htons(ofp_to_u16(67));
-    udp->udp_dst = htons(ofp_to_u16(68));
+    udp->udp_src = htons(ofp_to_u16(DHCP_SERVER_PORT));
+    udp->udp_dst = htons(ofp_to_u16(DHCP_CLIENT_PORT));
     struct dhcp_header * dhcp;
     dhcp = dp_packet_put_zeros(out_packet, sizeof(*dhcp));
     memcpy(dhcp, in_dhcp, sizeof(struct dhcp_header));
-    dhcp->op = 0x02;
+    dhcp->op = DHCP_OP_REPLY;
     dhcp->yiaddr = in_flow->nw_src;
 
     void * opts = dp_packet_put_zeros(out_packet, options_len);
@@ -169,7 +193,6 @@ compose_dhcp_response(struct flow *in_flow,
     udp->udp_len = htons(ofp_to_u16(udp_len));
     ip->ip_tot_len = htons(ofp_to_u16(IP_HEADER_LEN + udp_len));
     ip->ip_csum = csum(ip, sizeof *ip);
-    udp->udp_csum = csum(udp, sizeof(*dhcp) + options_len + UDP_HEADER_LEN);
     udp->udp_csum = 0;
 }
 
@@ -197,7 +220,7 @@ static uint8_t get_dhcp_message_type(struct dhcp_header const *dhcp_data, size_t
     char const *footer = (char *)dhcp_data + sizeof(*dhcp_data);
     uint32_t cookie = *(uint32_t *)footer;
 
-    if (cookie != htonl(0x63825363))
+    if (cookie != htonl(DHCP_MAGIC_COOKIE))
         /*Cookie validation failed*/
         return (uint8_t)-1;
     footer += sizeof(uint32_t);
@@ -205,7 +228,7 @@ static uint8_t get_dhcp_message_type(struct dhcp_header const *dhcp_data, size_t
     for (struct dhcp_option_header const *opt = (struct dhcp_option_header *)footer;
          footer < (char *)dhcp_data + size;
          footer += (sizeof(*opt) + opt->len)) {
-        if (opt->option == 53) {
+        if (opt->option == DHCP_OPT_MSG_TYPE) {
             return *(uint8_t *)OPTION_PAYLOAD(opt);
         }
     }
@@ -233,7 +256,7 @@ process_packet_in(struct ofp_header* msg)
 
 
     struct dhcp_header const *dhcp_data = dp_packet_get_udp_payload(&packet);
-    if (dhcp_data->op != 0x01) {
+    if (dhcp_data->op != DHCP_OP_REQUEST) {
         return;
     }
     /*Send response*/
@@ -241,7 +264,8 @@ process_packet_in(struct ofp_header* msg)
     struct ofputil_packet_out ofpacket_out;
     struct ofpbuf ofpacts, *buf;
     uint8_t dhcp_message_type = get_dhcp_message_type(dhcp_data, dp_packet_l4_size(&packet));
-    if (dhcp_message_type != 0x01 && dhcp_message_type != 0x03) {
+    if (dhcp_message_type != DHCP_MSG_REQUEST &&
+        dhcp_message_type != DHCP_MSG_DISCOVER) {
         return;
     }
 
@@ -440,8 +464,8 @@ ofcontroller_add_flows(const struct sbrec_port_binding *binding,
         match_set_dl_src(&match, mac);
         match_set_dl_type(&match, htons(ETH_TYPE_IP));
         match_set_nw_proto(&match, IPPROTO_UDP);
-        match_set_tp_src(&match, htons(ofp_to_u16(68)));
-        match_set_tp_dst(&match, htons(ofp_to_u16(67)));
+        match_set_tp_src(&match, htons(ofp_to_u16(DHCP_CLIENT_PORT)));
+        match_set_tp_dst(&match, htons(ofp_to_u16(DHCP_SERVER_PORT)));
         ofpact_put_SET_IPV4_SRC(&ofpacts)->ipv4 = ipv4;
         struct ofpact_controller *controller = ofpact_put_CONTROLLER(&ofpacts);
         controller->max_len = UINT16_MAX;
